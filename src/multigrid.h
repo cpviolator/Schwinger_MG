@@ -1,0 +1,88 @@
+#pragma once
+#include "types.h"
+#include "linalg.h"
+#include "lattice.h"
+#include "dirac.h"
+#include "gauge.h"
+#include "prolongator.h"
+#include "coarse_op.h"
+#include "eigensolver.h"
+#include "smoother.h"
+#include <vector>
+#include <functional>
+#include <random>
+#include <iostream>
+#include <omp.h>
+
+struct MGLevel {
+    OpApply op;                                   // operator at this level
+    int dim;                                      // vector dimension
+    std::function<Vec(const Vec&)> restrict_fn;   // fine -> coarse
+    std::function<Vec(const Vec&)> prolong_fn;    // coarse -> fine
+    CoarseOp Ac;                                  // coarse operator (Galerkin)
+    int pre_smooth;
+    int post_smooth;
+    double richardson_omega = 0.0;  // 0 = use MR (default), >0 = Richardson
+    // Coarsest-level deflation: eigenvectors and eigenvalues of Ac
+    std::vector<Vec> defl_vecs;
+    std::vector<double> defl_vals;
+};
+
+Vec mg_vcycle(const DiracOp& D, Prolongator& P, CoarseOp& Ac,
+              const Vec& b, int pre_smooth, int post_smooth);
+
+Vec mg_cycle(std::vector<MGLevel>& levels, int lev, const Vec& b,
+             bool w_cycle);
+
+struct MGHierarchy {
+    std::vector<MGLevel> levels;
+    // Storage for prolongators (must outlive the MGLevel references)
+    std::vector<Prolongator> geo_prolongators;          // level 0
+    std::vector<CoarseProlongator> coarse_prolongators;  // levels 1+
+    // Storage for coarse operators at intermediate levels
+    std::vector<CoarseOp> intermediate_Ac;
+    bool w_cycle;
+    // Store level-0 null vectors for warm-start rebuilds
+    std::vector<Vec> null_vecs_l0;
+
+    void update_coarsest_deflation(int n_defl, int lobpcg_iters = 3);
+    void set_symmetric(double damping = 0.8);
+    Vec precondition(const Vec& b);
+    void rebuild_deeper_levels();
+    Vec prolong_to_fine(const Vec& v_coarse) const;
+    std::pair<std::vector<Vec>, std::vector<double>>
+    build_fine_deflation(int k, const OpApply& fine_op, int fine_dim,
+                         int n_refine = 5,
+                         std::vector<Vec>* warm_X_coarse = nullptr,
+                         std::vector<Vec>* warm_X_fine = nullptr);
+};
+
+std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,
+                                         int outer_iters, std::mt19937& rng,
+                                         const std::vector<Vec>* warm_start = nullptr);
+
+std::vector<Vec> compute_near_null_space_generic(
+    const OpApply& A, int dim, int k, int outer_iters, std::mt19937& rng,
+    const std::vector<Vec>* warm_start = nullptr);
+
+MGHierarchy build_mg_hierarchy(
+    const DiracOp& D, int n_levels,
+    int block_size, int k_null, int coarse_block_agg,
+    int null_iters, std::mt19937& rng,
+    bool w_cycle = true,
+    int pre_smooth = 3, int post_smooth = 3,
+    bool verbose = true,
+    const std::vector<Vec>* warm_start = nullptr);
+
+MGHierarchy build_mg_hierarchy_warm(
+    const DiracOp& D, int n_levels,
+    int block_size, int k_null, int coarse_block_agg,
+    int null_iters, std::mt19937& rng,
+    const std::vector<Vec>& warm_null_vecs,
+    bool w_cycle = true,
+    int pre_smooth = 3, int post_smooth = 3,
+    bool verbose = false);
+
+std::vector<Vec> refresh_from_coarse_eigvecs(
+    const DiracOp& D, const Prolongator& P, const CoarseOp& Ac,
+    int k, int smooth_iters = 5);
