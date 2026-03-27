@@ -179,6 +179,7 @@ int main(int argc, char** argv) {
     bool   hmc_force_gradient = false;
     bool   hmc_omelyan = false;
     bool   hmc_revtest = false;
+    bool   hmc_eo = false;         // run EO-preconditioned HMC
     int    hmc_defl_refresh = 0;
     int    hmc_n_outer = 10;
     int    hmc_n_inner = 5;
@@ -236,6 +237,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-force-gradient")) hmc_force_gradient = true;
         else if (match("--hmc-omelyan")) hmc_omelyan = true;
         else if (match("--hmc-revtest")) hmc_revtest = true;
+        else if (match("--hmc-eo")) hmc_eo = true;
         else if (match("--hmc-defl-refresh")) hmc_defl_refresh = std::atoi(argv[++i]);
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
         else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
@@ -379,6 +381,73 @@ int main(int argc, char** argv) {
                   << 100.0 * n_accept / hmc_traj << "%\n";
         std::cout << "Configs saved: " << saved_count << "\n";
 
+        return 0;
+    }
+
+    // -----------------------------------------------------------------
+    //  Even-odd preconditioned HMC test
+    // -----------------------------------------------------------------
+    if (hmc_eo) {
+        using Clock = std::chrono::high_resolution_clock;
+        using Duration = std::chrono::duration<double>;
+
+        std::cout << "=== Even-Odd Preconditioned HMC ===\n\n";
+        std::cout << "L=" << L << "  mass=" << mass << "  beta=" << hmc_beta
+                  << "  csw=" << c_sw << "  tau=" << hmc_tau
+                  << "  steps=" << hmc_steps << "\n\n";
+
+        // Force verification first
+        std::cout << "--- Force verification ---\n";
+        verify_forces_eo(gauge, hmc_beta, mass, wilson_r, max_iter, tol, c_sw);
+
+        // Also verify non-EO for comparison
+        std::cout << "\n--- Non-EO force verification ---\n";
+        verify_forces(gauge, hmc_beta, mass, wilson_r, max_iter, tol, c_sw);
+
+        // Run EO HMC trajectories
+        HMCParams params;
+        params.beta = hmc_beta;
+        params.tau = hmc_tau;
+        params.n_steps = hmc_steps;
+        params.cg_maxiter = max_iter;
+        params.cg_tol = tol;
+        params.c_sw = c_sw;
+
+        int total_traj = hmc_therm + hmc_traj;
+        int n_accept = 0;
+
+        std::cout << "\n--- EO HMC Trajectories ---\n";
+        std::cout << std::setw(6) << "Traj" << std::setw(8) << "Plaq"
+                  << std::setw(12) << "dH" << std::setw(6) << "Acc"
+                  << std::setw(8) << "Rate" << std::setw(8) << "CG"
+                  << std::setw(10) << "Time\n";
+        std::cout << std::string(58, '-') << "\n";
+
+        for (int traj = 0; traj < total_traj; traj++) {
+            auto t0 = Clock::now();
+            auto result = hmc_trajectory_eo(gauge, lat, mass, wilson_r, params, rng);
+            double dt_traj = Duration(Clock::now() - t0).count();
+
+            if (traj >= hmc_therm) n_accept += result.accepted;
+            int meas_traj = (traj >= hmc_therm) ? (traj - hmc_therm + 1) : 0;
+            double rate = meas_traj > 0 ? (double)n_accept / meas_traj : 0.0;
+
+            std::cout << std::setw(6) << traj
+                      << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
+                      << std::setw(12) << std::scientific << std::setprecision(3) << result.dH
+                      << std::setw(6) << (result.accepted ? "Y" : "N")
+                      << std::setw(7) << std::fixed << std::setprecision(1)
+                      << (traj >= hmc_therm ? 100.0*rate : 0.0) << "%"
+                      << std::setw(8) << result.total_cg_iters
+                      << std::setw(10) << std::fixed << std::setprecision(2) << dt_traj;
+            if (traj < hmc_therm) std::cout << " [therm]";
+            std::cout << "\n";
+        }
+
+        std::cout << "\n=== EO HMC Summary ===\n";
+        std::cout << "Final <plaq> = " << std::fixed << std::setprecision(6) << gauge.avg_plaq() << "\n";
+        std::cout << "Acceptance rate: " << std::fixed << std::setprecision(1)
+                  << 100.0 * n_accept / hmc_traj << "%\n";
         return 0;
     }
 

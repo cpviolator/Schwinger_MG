@@ -470,6 +470,334 @@ void fermion_force(const DiracOp& D, const Vec& X,
     }
 }
 
+// ========================================
+// Even-odd preconditioned HMC functions
+// ========================================
+
+void generate_pseudofermion_eo(const DiracOp& D, std::mt19937& rng, Vec& phi_even) {
+    // Generate η_e ~ N(0,1) on even sites, then φ_e = D̂ η_e
+    Vec eta_e = random_vec(D.lat.ndof2, rng);
+    phi_even.resize(D.lat.ndof2);
+    D.apply_schur(eta_e, phi_even);
+}
+
+FermionActionResult fermion_action_eo(const DiracOp& D, const Vec& phi_even,
+                                       int max_iter, double tol) {
+    // Solve D̂†D̂ x_e = φ_e on even parity
+    OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_schur_DdagD(src, dst); };
+    auto res = cg_solve(A, D.lat.ndof2, phi_even, max_iter, tol);
+
+    // Reconstruct full solution: x_o = -D_oo^{-1} D_oe x_e
+    Vec x_odd;
+    D.reconstruct_odd(res.solution, x_odd);
+
+    // Scatter to full lattice
+    Vec X_full(D.lat.ndof, cx(0));
+    D.scatter_even(res.solution, X_full);
+    D.scatter_odd(x_odd, X_full);
+
+    // Action S_f = Re(φ_e† x_e)
+    // Note: this is the Schur complement action, NOT divided by anything.
+    // The 2-flavour partition function with EO is:
+    //   |det D|² = |det D_ee|² |det D_oo|² |det D̂|²
+    // The pseudofermion action for D̂ is:
+    //   S_pf = φ_e† (D̂†D̂)^{-1} φ_e = Re(φ_e† x_e)
+    double act = std::real(dot(phi_even, res.solution));
+
+    return {act, std::move(X_full), res.iterations};
+}
+
+void fermion_force_eo(const DiracOp& D, const Vec& x_even, const Vec& Y_even,
+                      std::array<RVec, 2>& force) {
+    // Compute dS_eo/dU where S_eo = φ_e†(D̂†D̂)^{-1}φ_e = x_e†D̂†D̂ x_e
+    // Force F(s,μ) = -∂S_eo/∂θ(s,μ) = -2 Re[Y_e†(∂D̂/∂θ)x_e]
+    //
+    // For Wilson (no clover): D̂ = D_ee - D_eo D_oo^{-1} D_oe
+    // ∂D̂/∂θ = -(∂D_eo/∂θ) D_oo^{-1} D_oe - D_eo D_oo^{-1} (∂D_oe/∂θ)
+    //
+    // We need two odd-site intermediates:
+    //   p_o = D_oo^{-1} D_oe x_e     (odd part of the reconstructed solution)
+    //   q_o = D_oo^{-1} D_oe^dag Y_e (adjoint hop of Y_e to odd, with D_oo^{-1})
+    //
+    // For γ₅-hermiticity: D_oe^dag = γ₅ D_eo γ₅
+    // So q_o = D_oo^{-1} γ₅ D_eo γ₅ Y_e
+    //
+    // Then the force at link (s,μ) is:
+    //   F = 2Re[Y_e† (∂D_eo/∂θ) p_o] + 2Re[q_o† (∂D_oe/∂θ) x_e]
+    //     (with appropriate signs from D̂ = D_ee - ...)
+
+    const Lattice& lat = D.lat;
+    int V2 = lat.V2;
+    force[0].assign(lat.V, 0.0);
+    force[1].assign(lat.V, 0.0);
+
+    // Compute p_o = D_oo^{-1} D_oe x_e
+    Vec D_oe_x;
+    D.apply_oe(x_even, D_oe_x);
+    Vec p_odd(lat.ndof2);
+    D.invert_diag(D_oe_x, p_odd, false);
+
+    // Compute q_o = D_oo^{-1} γ₅ D_eo γ₅ Y_e
+    // First: g5_Y = γ₅ Y_e
+    Vec g5_Y(lat.ndof2);
+    for (int h = 0; h < V2; h++) { g5_Y[2*h] = Y_even[2*h]; g5_Y[2*h+1] = -Y_even[2*h+1]; }
+    // D_eo applied to g5_Y (this treats g5_Y as an odd vector, producing even)
+    // Wait — D_eo goes odd→even. We need D_eo^dag which maps even→odd.
+    // D_eo^dag = γ₅_o D_oe γ₅_e. So: q_o = D_oo^{-1} γ₅ D_oe γ₅ Y_e
+    // But D_oe maps even→odd. So D_oe(γ₅ Y_e) gives odd, then γ₅, then D_oo^{-1}.
+    Vec D_oe_g5Y;
+    D.apply_oe(g5_Y, D_oe_g5Y);
+    // Apply γ₅ to the odd result
+    Vec g5_D_oe_g5Y(lat.ndof2);
+    for (int h = 0; h < V2; h++) { g5_D_oe_g5Y[2*h] = D_oe_g5Y[2*h]; g5_D_oe_g5Y[2*h+1] = -D_oe_g5Y[2*h+1]; }
+    Vec q_odd(lat.ndof2);
+    D.invert_diag(g5_D_oe_g5Y, q_odd, false);
+
+    // Now the force. For each link (s,μ), the D_eo/D_oe hopping terms give:
+    //
+    // Term 1: -Y_e†(∂D_eo/∂θ)p_o  (the ∂D_eo/∂θ term in dD̂/dθ, with overall - from D̂ = D_ee - ...)
+    //   This involves: Y_e at even site, p_o at odd neighbor (or vice versa)
+    //   ∂D_eo/∂θ(s,μ) = derivative of the hop from odd s+μ to even s through link U_μ(s)
+    //
+    // Term 2: -q_o†(∂D_oe/∂θ)x_e  (the D_eo D_oo^{-1} ∂D_oe/∂θ term)
+    //   This involves: q_o at odd site, x_e at even neighbor
+    //
+    // The outer product structure is IDENTICAL to the full fermion_force,
+    // but using (Y_e, q_o) as "chi" and (x_e, p_o) as "X",
+    // with the fields living on their respective parities.
+    //
+    // Actually, let me construct full-lattice vectors:
+    //   X_full = (x_e on even, p_o on odd)
+    //   chi_full = (Y_e on even, q_o on odd)
+    // Then the force is the same outer product as fermion_force(D, X_full),
+    // but with chi_full instead of D*X_full!
+
+    // Scatter to full lattice
+    Vec X_full(lat.ndof, cx(0));
+    Vec chi_full(lat.ndof, cx(0));
+    for (int h = 0; h < V2; h++) {
+        int se = lat.even_sites[h];
+        X_full[2*se] = x_even[2*h]; X_full[2*se+1] = x_even[2*h+1];
+        chi_full[2*se] = Y_even[2*h]; chi_full[2*se+1] = Y_even[2*h+1];
+
+        int so = lat.odd_sites[h];
+        X_full[2*so] = p_odd[2*h]; X_full[2*so+1] = p_odd[2*h+1];
+        chi_full[2*so] = q_odd[2*h]; chi_full[2*so+1] = q_odd[2*h+1];
+    }
+
+    // Now use the SAME outer product structure as fermion_force,
+    // but with chi_full instead of D*X_full.
+    // The overall sign is NEGATIVE because D̂ = D_ee - D_eo D_oo^{-1} D_oe,
+    // and the outer products compute d(D_eo D_oo^{-1} D_oe)/dθ (without the minus).
+    // The force F = -∂S/∂θ = -2Re[Y†(∂D̂/∂θ)x] = +2Re[Y†(d(hop chain)/dθ)x].
+    // But fermion_force convention returns -∂S/∂θ directly, so we negate.
+    cx ii(0,1);
+    for (int s = 0; s < lat.V; s++) {
+        cx chi_s0 = chi_full[2*s], chi_s1 = chi_full[2*s+1];
+        cx x_s0 = X_full[2*s], x_s1 = X_full[2*s+1];
+
+        // mu=0 (x-direction)
+        {
+            int sf = lat.xp(s);
+            cx u = D.gauge.U[0][s];
+            cx ud = std::conj(u);
+
+            cx ux0 = u * X_full[2*sf], ux1 = u * X_full[2*sf+1];
+            cx fwd0 = D.r * ux0 - ux1;
+            cx fwd1 = -ux0 + D.r * ux1;
+            cx c_fwd = std::conj(chi_s0) * fwd0 + std::conj(chi_s1) * fwd1;
+
+            cx udx0 = ud * x_s0, udx1 = ud * x_s1;
+            cx bwd0 = D.r * udx0 + udx1;
+            cx bwd1 = udx0 + D.r * udx1;
+            cx c_bwd = std::conj(chi_full[2*sf]) * bwd0 + std::conj(chi_full[2*sf+1]) * bwd1;
+
+            force[0][s] = std::real(ii * c_bwd - ii * c_fwd);
+        }
+
+        // mu=1 (y-direction)
+        {
+            int sf = lat.yp(s);
+            cx u = D.gauge.U[1][s];
+            cx ud = std::conj(u);
+
+            cx ux0 = u * X_full[2*sf], ux1 = u * X_full[2*sf+1];
+            cx fwd0 = D.r * ux0 + ii * ux1;
+            cx fwd1 = -ii * ux0 + D.r * ux1;
+            cx c_fwd = std::conj(chi_s0) * fwd0 + std::conj(chi_s1) * fwd1;
+
+            cx udx0 = ud * x_s0, udx1 = ud * x_s1;
+            cx bwd0 = D.r * udx0 - ii * udx1;
+            cx bwd1 = ii * udx0 + D.r * udx1;
+            cx c_bwd = std::conj(chi_full[2*sf]) * bwd0 + std::conj(chi_full[2*sf+1]) * bwd1;
+
+            force[1][s] = std::real(ii * c_bwd - ii * c_fwd);
+        }
+    }
+
+    // Apply overall minus sign: D̂ = D_ee - (hop chain), so ∂D̂/∂θ = -∂(hop chain)/∂θ.
+    // The outer products above compute +∂(hop chain)/∂θ contribution.
+    // F = -∂S/∂θ = -2Re[Y†(∂D̂/∂θ)x] = +2Re[Y†(∂(hop chain)/∂θ)x] = what we computed above.
+    // But wait — the non-EO fermion_force also computes F = -∂S/∂θ and returns positive values
+    // that match -(S+-S-)/(2eps). Let me check the sign convention more carefully.
+    //
+    // Actually, the numerical force computes: ff_num = -(S+ - S-)/(2eps) = -∂S/∂θ.
+    // The analytical force should equal ff_num. Currently ff_ana = -ff_num.
+    // So negate:
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++)
+            force[mu][s] = -force[mu][s];
+
+    // Note: no clover force term here — for clover, dD_oo/dU ≠ 0
+    // and would require additional sigma-trace contributions.
+}
+
+void verify_forces_eo(const GaugeField& g, double beta, double mass, double wilson_r,
+                      int max_iter, double tol, double c_sw) {
+    const Lattice& lat = g.lat;
+    double eps = 1e-5;
+    std::mt19937 rng(12345);
+
+    DiracOp D0(lat, g, mass, wilson_r, c_sw);
+    Vec phi_e;
+    generate_pseudofermion_eo(D0, rng, phi_e);
+
+    // Solve D̂†D̂ x_e = phi_e to get x_even, then compute Y_e = D̂ x_e
+    OpApply A0 = [&D0](const Vec& src, Vec& dst) { D0.apply_schur_DdagD(src, dst); };
+    auto cg_res = cg_solve(A0, lat.ndof2, phi_e, max_iter, tol);
+    Vec x_even = cg_res.solution;
+    Vec Y_even(lat.ndof2);
+    D0.apply_schur(x_even, Y_even);
+
+    // Analytical EO force
+    std::array<RVec, 2> ff_ana;
+    fermion_force_eo(D0, x_even, Y_even, ff_ana);
+
+    std::array<RVec, 2> gf_ana;
+    gauge_force(g, beta, gf_ana);
+
+    double max_gf_err = 0, max_ff_err = 0;
+    double max_gf_val = 0, max_ff_val = 0;
+
+    std::cout << "\n=== EO Force Verification ===\n";
+    for (int test = 0; test < 10; test++) {
+        int mu = test % 2;
+        int s = test * 7 % lat.V;
+
+        GaugeField g_plus(lat); g_plus.U[0] = g.U[0]; g_plus.U[1] = g.U[1];
+        g_plus.U[mu][s] *= std::exp(cx(0, eps));
+        GaugeField g_minus(lat); g_minus.U[0] = g.U[0]; g_minus.U[1] = g.U[1];
+        g_minus.U[mu][s] *= std::exp(cx(0, -eps));
+
+        // Numerical gauge force
+        double sg_p = gauge_action(g_plus, beta), sg_m = gauge_action(g_minus, beta);
+        double gf_num = -(sg_p - sg_m) / (2 * eps);
+        double gf_err = std::abs(gf_ana[mu][s] - gf_num);
+        max_gf_err = std::max(max_gf_err, gf_err);
+        max_gf_val = std::max(max_gf_val, std::abs(gf_ana[mu][s]));
+
+        // Numerical fermion force (using EO action)
+        DiracOp Dp(lat, g_plus, mass, wilson_r, c_sw);
+        DiracOp Dm(lat, g_minus, mass, wilson_r, c_sw);
+        auto rp = fermion_action_eo(Dp, phi_e, max_iter, tol);
+        auto rm = fermion_action_eo(Dm, phi_e, max_iter, tol);
+        double ff_num = -(rp.action - rm.action) / (2 * eps);
+
+        double ff_err = std::abs(ff_ana[mu][s] - ff_num);
+        max_ff_err = std::max(max_ff_err, ff_err);
+        max_ff_val = std::max(max_ff_val, std::abs(ff_ana[mu][s]));
+
+        std::cout << "  link(" << mu << "," << s << "): "
+                  << "gf_ana=" << std::setw(10) << gf_ana[mu][s]
+                  << " gf_num=" << std::setw(10) << gf_num
+                  << " | ff_ana=" << std::setw(10) << ff_ana[mu][s]
+                  << " ff_num=" << std::setw(10) << ff_num << "\n";
+    }
+    std::cout << "EO Gauge force: max_err=" << max_gf_err
+              << " rel=" << max_gf_err / std::max(max_gf_val, 1e-30) << "\n";
+    std::cout << "EO Fermion force: max_err=" << max_ff_err
+              << " rel=" << max_ff_err / std::max(max_ff_val, 1e-30) << "\n";
+}
+
+HMCResult hmc_trajectory_eo(
+    GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
+    const HMCParams& params, std::mt19937& rng)
+{
+    double dt = params.tau / params.n_steps;
+    double c_sw = params.c_sw;
+    int total_cg = 0;
+
+    GaugeField gauge_old(lat);
+    gauge_old.U[0] = gauge.U[0]; gauge_old.U[1] = gauge.U[1];
+
+    MomentumField mom(lat);
+    mom.randomise(rng);
+
+    // Generate EO pseudofermion
+    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+    Vec phi_e;
+    generate_pseudofermion_eo(D_init, rng, phi_e);
+
+    // Initial Hamiltonian
+    double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    { auto res = fermion_action_eo(D_init, phi_e, params.cg_maxiter, params.cg_tol);
+      H_init += res.action; total_cg += res.cg_iters; }
+
+    // Leapfrog: half-kick → [drift → kick]^{N-1} → drift → half-kick
+    auto kick = [&](double step) {
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        std::array<RVec, 2> gf, ff;
+        gauge_force(gauge, params.beta, gf);
+
+        // EO CG solve
+        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_schur_DdagD(src, dst); };
+        auto cg_res = cg_solve(A, lat.ndof2, phi_e, params.cg_maxiter, params.cg_tol);
+        total_cg += cg_res.iterations;
+
+        // Compute Y_e = D̂ x_e for the EO force
+        Vec Y_e(lat.ndof2);
+        D.apply_schur(cg_res.solution, Y_e);
+
+        // EO fermion force
+        fermion_force_eo(D, cg_res.solution, Y_e, ff);
+
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                mom.pi[mu][s] += step * (gf[mu][s] + ff[mu][s]);
+    };
+    auto drift = [&](double step) {
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                gauge.U[mu][s] *= std::exp(cx(0, step * mom.pi[mu][s]));
+    };
+
+    kick(0.5 * dt);
+    for (int step = 0; step < params.n_steps - 1; step++) {
+        drift(dt);
+        kick(dt);
+    }
+    drift(dt);
+    kick(0.5 * dt);
+
+    // Final Hamiltonian
+    double H_final = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    { DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+      auto res = fermion_action_eo(D, phi_e, params.cg_maxiter, params.cg_tol);
+      H_final += res.action; total_cg += res.cg_iters; }
+
+    double dH = H_final - H_init;
+
+    // Metropolis
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    bool accepted = (udist(rng) < std::exp(-dH));
+    if (!accepted) { gauge.U[0] = gauge_old.U[0]; gauge.U[1] = gauge_old.U[1]; }
+
+    static int n_acc = 0, n_tot = 0;
+    n_tot++; if (accepted) n_acc++;
+
+    return {accepted, dH, (double)n_acc / n_tot, total_cg};
+}
+
 void verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
                    int max_iter, double tol, double c_sw) {
     const Lattice& lat = g.lat;
