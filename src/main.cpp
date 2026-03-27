@@ -27,52 +27,126 @@ void print_usage(const char* prog) {
     std::cout
         << "Usage: " << prog << " [options]\n"
         << "\n"
-        << "2D Schwinger model MG solver with Ritz-maintained subspace.\n"
-        << "Compares three deflation strategies as the gauge field evolves.\n"
+        << "2D Schwinger model (U(1) lattice gauge theory) with Wilson-clover fermions,\n"
+        << "multigrid solver, and multi-timescale HMC with nested force-gradient integration.\n"
         << "\n"
-        << "Options:\n"
-        << "  -L <int>       Lattice size (LxL)             [default: 16]\n"
-        << "  -m <float>     Fermion mass                   [default: 0.05]\n"
-        << "  -e <float>     Gauge perturbation per step    [default: 0.12]\n"
-        << "  -b <int>       Block size (bxb)               [default: 4]\n"
-        << "  -k <int>       Null vectors per block          [default: 4]\n"
-        << "  -n <int>       Number of MD steps             [default: 30]\n"
-        << "  -s <int>       RNG seed                       [default: 42]\n"
-        << "  -w <float>     Hot-start width (initial U)    [default: 0.4]\n"
-        << "  -r <float>     Wilson parameter               [default: 1.0]\n"
-        << "  -t <int>       Number of OpenMP threads        [default: all cores]\n"
-        << "  --tol <float>  FGMRES tolerance               [default: 1e-10]\n"
-        << "  --krylov <int> Krylov subspace dimension      [default: 30]\n"
-        << "  --maxiter <int> Max FGMRES iterations         [default: 300]\n"
-        << "  --mg-levels <int> Number of MG levels          [default: 1]\n"
-        << "  --w-cycle      Use W-cycle (default for levels>1)\n"
-        << "  --v-cycle      Use V-cycle\n"
-        << "  --coarse-block <int> Coarse-level block size   [default: k*4]\n"
-        << "  --refresh <int> Periodic refresh interval    [default: 3]\n"
-        << "  --adaptive-threshold <float> Iter ratio trigger [default: 1.3]\n"
-        << "  --help, -h     Show this help message\n"
+        << "=== Lattice & Fermion Options ===\n"
+        << "  -L <int>              Lattice size (LxL)                [16]\n"
+        << "  -m <float>            Fermion mass                      [0.05]\n"
+        << "  -r <float>            Wilson parameter                  [1.0]\n"
+        << "  --csw <float>         Clover coefficient (0=Wilson)     [0.0]\n"
+        << "  -w <float>            Hot-start width (initial gauge)   [0.4]\n"
+        << "  -s <int>              RNG seed                          [42]\n"
+        << "  -t <int>              OpenMP threads                    [all cores]\n"
         << "\n"
-        << "HMC options:\n"
-        << "  --hmc          Run HMC instead of MG benchmark\n"
-        << "  --hmc-traj <int>   Number of trajectories          [default: 100]\n"
-        << "  --hmc-tau <float>  Trajectory length                [default: 1.0]\n"
-        << "  --hmc-steps <int>  Leapfrog steps per trajectory    [default: 20]\n"
-        << "  --hmc-beta <float> Gauge coupling beta              [default: 2.0]\n"
-        << "  --hmc-therm <int>  Thermalisation trajectories       [default: 20]\n"
-        << "  --hmc-save-every <int>  Save every N trajectories   [default: 10]\n"
-        << "  --hmc-save-prefix <str> Gauge file prefix           [default: gauge]\n"
-        << "  --hmc-load <file>  Load initial gauge configuration\n"
+        << "=== Multigrid Options ===\n"
+        << "  --mg-levels <int>     Number of MG levels               [1]\n"
+        << "  -b <int>              Block size (bxb)                  [4]\n"
+        << "  -k <int>              Null vectors per block            [4]\n"
+        << "  --coarse-block <int>  Coarse-level block size           [k*4]\n"
+        << "  --w-cycle             Use W-cycle (default for levels>1)\n"
+        << "  --v-cycle             Use V-cycle\n"
+        << "  --no-mg               Disable multigrid\n"
+        << "  --symmetric-mg        Use Richardson smoothing (for CG)\n"
         << "\n"
-        << "Examples:\n"
-        << "  " << prog << " -L 32 -m 0.01 -n 50       # larger lattice, lighter mass\n"
-        << "  " << prog << " -L 8 -b 2 -k 8            # small lattice, more null vecs\n"
-        << "  " << prog << " -e 0.05 -n 100             # slow drift, many steps\n"
-        << "  " << prog << " -L 32 --mg-levels 2        # 2-level W-cycle MG\n"
-        << "  " << prog << " -L 64 --mg-levels 3 -k 8   # 3-level MG\n"
-        << "  " << prog << " --hmc -L 16 -m 0.01 --hmc-beta 4.0 --hmc-traj 200\n";
+        << "=== Solver Options ===\n"
+        << "  --tol <float>         CG/FGMRES tolerance              [1e-10]\n"
+        << "  --krylov <int>        Krylov subspace dimension         [30]\n"
+        << "  --maxiter <int>       Max solver iterations             [300]\n"
+        << "\n"
+        << "=== Standard HMC ===\n"
+        << "  --hmc                 Run standard HMC\n"
+        << "  --hmc-traj <int>      Number of trajectories            [100]\n"
+        << "  --hmc-tau <float>     Trajectory length                 [1.0]\n"
+        << "  --hmc-steps <int>     Leapfrog steps per trajectory     [20]\n"
+        << "  --hmc-beta <float>    Gauge coupling beta               [2.0]\n"
+        << "  --hmc-therm <int>     Thermalisation trajectories       [20]\n"
+        << "  --hmc-save-every <N>  Save gauge every N trajectories   [10]\n"
+        << "  --hmc-save-prefix <s> Gauge file prefix                 [gauge]\n"
+        << "  --hmc-load <file>     Load initial gauge configuration\n"
+        << "\n"
+        << "=== Multi-Timescale HMC (Fine-Grid Deflation) ===\n"
+        << "  --hmc-multiscale      Enable fine-grid deflation multi-timescale HMC\n"
+        << "  --hmc-n-outer <int>   Outer leapfrog steps              [10]\n"
+        << "  --hmc-n-inner <int>   Inner steps per outer             [5]\n"
+        << "  --hmc-n-defl <int>    Deflation eigenvectors            [8]\n"
+        << "  --hmc-fresh-period <N> Fresh TRLM every N trajectories  [10]\n"
+        << "\n"
+        << "=== MG Multi-Timescale HMC (Coarse-Grid Deflation) ===\n"
+        << "  --hmc-mg-multiscale   Enable MG coarse-grid deflation HMC\n"
+        << "  --hmc-n-outer <int>   Outer integrator steps            [10]\n"
+        << "  --hmc-n-inner <int>   Inner leapfrog steps per outer    [5]\n"
+        << "  --hmc-n-defl <int>    Coarse deflation eigenvectors     [8]\n"
+        << "  --hmc-omelyan         Use Omelyan (2MN) outer integrator\n"
+        << "  --hmc-force-gradient  Use nested FGI (MILC PQPQP) outer integrator\n"
+        << "  --hmc-defl-refresh <N> Refresh coarse deflation every N inner steps [0=off]\n"
+        << "  --hmc-revtest         Run reversibility test (forward+backward)\n"
+        << "  --hmc-fresh-period <N> Fresh TRLM every N trajectories  [10]\n"
+        << "\n"
+        << "=== Sparse Coarse Operator Study ===\n"
+        << "  --test-sparse-coarse  Run coarse eigenvector evolution study\n"
+        << "  --n-defl <int>        Number of deflation vectors       [16]\n"
+        << "  -n <int>              Number of gauge evolution steps    [30]\n"
+        << "  -e <float>            Gauge perturbation per step       [0.12]\n"
+        << "\n"
+        << "=== Deflation Test ===\n"
+        << "  --test-deflation      Run coarse eigenvector prolongation test\n"
+        << "  --cheb-only           Only test Chebyshev-filtered eigenvectors\n"
+        << "\n"
+        << "  --help, -h            Show this help\n"
+        << "\n"
+        << "======================= EXAMPLES =======================\n"
+        << "\n"
+        << "--- Basic MG Solver ---\n"
+        << "  " << prog << " -L 32 --mg-levels 2                    # 2-level W-cycle\n"
+        << "  " << prog << " -L 64 --mg-levels 3 -k 8 -t 8          # 3-level MG, 8 threads\n"
+        << "  " << prog << " -L 32 --mg-levels 2 --csw 1.0           # Wilson-clover MG\n"
+        << "\n"
+        << "--- Standard HMC ---\n"
+        << "  " << prog << " --hmc -L 16 --hmc-beta 2.0 --hmc-traj 100\n"
+        << "  " << prog << " --hmc -L 32 --csw 1.0 --hmc-beta 2.0    # clover HMC\n"
+        << "  " << prog << " --hmc -L 32 --hmc-therm 50 --hmc-save-every 5\n"
+        << "\n"
+        << "--- MG Multi-Timescale HMC (Leapfrog outer) ---\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --mg-levels 2 -b 4 -k 4 \\\n"
+        << "         --hmc-n-outer 20 --hmc-n-inner 2 --hmc-n-defl 16 --hmc-traj 20\n"
+        << "\n"
+        << "--- MG Multi-Timescale HMC (Omelyan outer) ---\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-omelyan --mg-levels 2 \\\n"
+        << "         -b 4 -k 4 --hmc-n-outer 10 --hmc-n-inner 2 --hmc-n-defl 16\n"
+        << "\n"
+        << "--- Nested Force-Gradient Integrator (MILC-style) ---\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 \\\n"
+        << "         -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 16 --hmc-traj 20\n"
+        << "\n"
+        << "--- Nested FGI with Wilson-Clover ---\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-force-gradient --csw 1.0 \\\n"
+        << "         --mg-levels 2 -b 4 -k 4 --hmc-n-outer 7 --hmc-n-inner 3 \\\n"
+        << "         --hmc-n-defl 16 --hmc-traj 20 --hmc-beta 2.0\n"
+        << "\n"
+        << "--- Nested FGI with Periodic Deflation Refresh ---\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 \\\n"
+        << "         -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 5 --hmc-n-defl 16 \\\n"
+        << "         --hmc-defl-refresh 3 --hmc-traj 20\n"
+        << "\n"
+        << "--- Reversibility Test (all integrators) ---\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-revtest --mg-levels 2 \\\n"
+        << "         -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 16\n"
+        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-revtest --csw 1.0 \\\n"
+        << "         --mg-levels 2 -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3\n"
+        << "\n"
+        << "--- Sparse Coarse Eigenvector Evolution Study ---\n"
+        << "  " << prog << " -L 128 --test-sparse-coarse --mg-levels 2 -b 4 -k 4 \\\n"
+        << "         --n-defl 16 -n 50 -e 0.02 --hmc-therm 20 --hmc-beta 2.0\n"
+        << "\n"
+        << "--- Thermalise and Save Gauge Configuration ---\n"
+        << "  " << prog << " -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4 \\\n"
+        << "         --hmc-therm 50 --hmc-beta 2.0 --n-defl 16 -n 1 -e 0.02\n"
+        << "  (saves to gauge_L32_b2.00_t50.bin, auto-loaded by subsequent runs)\n";
 }
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IOLBF, 0);  // line-buffered for crash diagnostics
     // --- defaults ---
     int    L         = 16;
     double mass      = 0.05;
@@ -83,6 +157,7 @@ int main(int argc, char** argv) {
     int    seed      = 42;
     double hot_width = 0.4;
     double wilson_r  = 1.0;
+    double c_sw      = 0.0;  // clover coefficient (0 = pure Wilson)
     double tol       = 1e-10;
     int    krylov    = 30;
     int    max_iter  = 300;
@@ -95,9 +170,20 @@ int main(int argc, char** argv) {
     bool   no_mg     = false;
     bool   symmetric_mg = false;
     bool   test_deflation = false;
+    bool   test_sparse_coarse = false;
     bool   cheb_only = false;
     int    n_defl_vecs = 0;
     bool   run_hmc   = false;
+    bool   hmc_multiscale = false;
+    bool   hmc_mg_multiscale = false;
+    bool   hmc_force_gradient = false;
+    bool   hmc_omelyan = false;
+    bool   hmc_revtest = false;
+    int    hmc_defl_refresh = 0;
+    int    hmc_n_outer = 10;
+    int    hmc_n_inner = 5;
+    int    hmc_n_defl  = 8;
+    int    hmc_fresh_period = 10;
     int    hmc_traj  = 100;
     double hmc_tau   = 1.0;
     int    hmc_steps = 20;
@@ -123,6 +209,7 @@ int main(int argc, char** argv) {
         else if (match("-s"))        seed      = next_int();
         else if (match("-w"))        hot_width = next_dbl();
         else if (match("-r"))        wilson_r  = next_dbl();
+        else if (match("--csw"))     c_sw      = next_dbl();
         else if (match("--tol"))     tol       = next_dbl();
         else if (match("--krylov"))  krylov    = next_int();
         else if (match("-t"))        n_threads = next_int();
@@ -144,7 +231,18 @@ int main(int argc, char** argv) {
         else if (match("--hmc-save-every")) hmc_save_every = next_int();
         else if (match("--hmc-save-prefix")) hmc_save_prefix = argv[++i];
         else if (match("--hmc-load")) hmc_load_file = argv[++i];
+        else if (match("--hmc-multiscale")) hmc_multiscale = true;
+        else if (match("--hmc-mg-multiscale")) hmc_mg_multiscale = true;
+        else if (match("--hmc-force-gradient")) hmc_force_gradient = true;
+        else if (match("--hmc-omelyan")) hmc_omelyan = true;
+        else if (match("--hmc-revtest")) hmc_revtest = true;
+        else if (match("--hmc-defl-refresh")) hmc_defl_refresh = std::atoi(argv[++i]);
+        else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
+        else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
+        else if (match("--hmc-n-defl")) hmc_n_defl = next_int();
+        else if (match("--hmc-fresh-period")) hmc_fresh_period = next_int();
         else if (match("--test-deflation")) test_deflation = true;
+        else if (match("--test-sparse-coarse")) test_sparse_coarse = true;
         else if (match("--cheb-only")) { test_deflation = true; cheb_only = true; }
         else if (match("--n-defl")) n_defl_vecs = next_int();
         else {
@@ -285,6 +383,761 @@ int main(int argc, char** argv) {
     }
 
     // -----------------------------------------------------------------
+    //  Multi-timescale HMC test
+    // -----------------------------------------------------------------
+    if (hmc_multiscale) {
+        using Clock = std::chrono::high_resolution_clock;
+        using Dur = std::chrono::duration<double>;
+
+        int n_traj = hmc_traj > 0 ? hmc_traj : 20;
+        int total_steps = hmc_n_outer * hmc_n_inner;
+
+        std::cout << "=== Multi-Timescale HMC Test ===\n\n";
+        std::cout << "L=" << L << "  DOF=" << lat.ndof << "  mass=" << mass
+                  << "  beta=" << hmc_beta << "\n";
+        std::cout << "n_outer=" << hmc_n_outer << "  n_inner=" << hmc_n_inner
+                  << "  total_steps=" << total_steps
+                  << "  tau=" << hmc_tau << "\n";
+        std::cout << "n_defl=" << hmc_n_defl
+                  << "  fresh_period=" << hmc_fresh_period
+                  << "  traj=" << n_traj << "\n\n";
+
+        // --- Compute initial eigenvectors ---
+        std::cout << "--- Computing " << hmc_n_defl << " eigenvectors of D†D ---\n";
+        DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+        OpApply A_init = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
+        auto trlm = trlm_eigensolver(A_init, lat.ndof, hmc_n_defl,
+                                      std::min(2*hmc_n_defl + 10, lat.ndof),
+                                      100, 1e-10);
+        DeflationState defl;
+        defl.eigvecs = std::move(trlm.eigvecs);
+        defl.eigvals = std::move(trlm.eigvals);
+        defl.valid = true;
+        defl.update_cache(D_init);
+
+        std::cout << "  Eigenvalues: ";
+        for (int i = 0; i < std::min(hmc_n_defl, 8); i++)
+            std::cout << std::scientific << std::setprecision(4) << defl.eigvals[i] << " ";
+        if (hmc_n_defl > 8) std::cout << "...";
+        std::cout << "\n\n";
+
+        // --- Run two HMC streams: standard vs multi-timescale ---
+        GaugeField gauge_std = gauge;
+        GaugeField gauge_ms = gauge;
+        std::mt19937 rng_std(seed + 1000);
+        std::mt19937 rng_ms(seed + 1000);  // same seed for fair comparison
+
+        HMCParams std_params;
+        std_params.beta = hmc_beta;
+        std_params.tau = hmc_tau;
+        std_params.n_steps = total_steps;
+        std_params.cg_maxiter = max_iter;
+        std_params.cg_tol = tol;
+        std_params.use_mg = false;
+        std_params.c_sw = c_sw;
+
+        MultiScaleParams ms_params;
+        ms_params.beta = hmc_beta;
+        ms_params.tau = hmc_tau;
+        ms_params.n_outer = hmc_n_outer;
+        ms_params.n_inner = hmc_n_inner;
+        ms_params.cg_maxiter = max_iter;
+        ms_params.cg_tol = tol;
+        ms_params.c_sw = c_sw;
+
+        int std_accept = 0, ms_accept = 0;
+        double std_dH_sum = 0, ms_dH_sum = 0;
+        int std_cg_sum = 0, ms_cg_sum = 0;
+        double std_time_sum = 0, ms_time_sum = 0;
+        double ms_low_time_sum = 0, ms_high_time_sum = 0;
+        int ms_low_evals_sum = 0;
+
+        std::cout << std::setw(5) << "traj"
+                  << " |" << std::setw(7) << "Std_CG"
+                  << std::setw(9) << "Std_dH"
+                  << std::setw(7) << "Std_A"
+                  << std::setw(9) << "Std_t"
+                  << " |" << std::setw(7) << "MS_CG"
+                  << std::setw(9) << "MS_dH"
+                  << std::setw(7) << "MS_A"
+                  << std::setw(9) << "MS_t"
+                  << std::setw(9) << "Low_t"
+                  << std::setw(9) << "High_t"
+                  << std::setw(8) << "LowEv"
+                  << " |" << std::setw(8) << "<plaq>"
+                  << "\n";
+
+        for (int t = 0; t < n_traj; t++) {
+            // --- Standard HMC ---
+            auto t0_std = Clock::now();
+            auto res_std = hmc_trajectory(gauge_std, lat, mass, wilson_r,
+                                           std_params, rng_std);
+            double t_std = Dur(Clock::now() - t0_std).count();
+            if (res_std.accepted) std_accept++;
+            std_dH_sum += std::abs(res_std.dH);
+            std_cg_sum += res_std.total_cg_iters;
+            std_time_sum += t_std;
+
+            // --- Multi-timescale HMC ---
+            auto t0_ms = Clock::now();
+            auto res_ms = hmc_trajectory_multiscale(gauge_ms, lat, mass, wilson_r,
+                                                     ms_params, defl, rng_ms);
+            double t_ms = Dur(Clock::now() - t0_ms).count();
+            if (res_ms.accepted) ms_accept++;
+            ms_dH_sum += std::abs(res_ms.dH);
+            ms_cg_sum += res_ms.highmode_cg_iters;
+            ms_time_sum += t_ms;
+            ms_low_time_sum += res_ms.lowmode_time;
+            ms_high_time_sum += res_ms.highmode_time;
+            ms_low_evals_sum += res_ms.lowmode_force_evals;
+
+            // Evolve deflation state after multi-timescale trajectory
+            DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw);
+            bool do_fresh = (hmc_fresh_period > 0) && ((t+1) % hmc_fresh_period == 0);
+            evolve_deflation_state(defl, D_new, do_fresh);
+
+            // Print per-trajectory stats
+            std::cout << std::fixed;
+            std::cout << std::setw(5) << t
+                      << " |" << std::setw(7) << res_std.total_cg_iters
+                      << std::setw(9) << std::setprecision(3) << res_std.dH
+                      << std::setw(7) << (res_std.accepted ? "Y" : "N")
+                      << std::setw(9) << std::setprecision(3) << t_std
+                      << " |" << std::setw(7) << res_ms.highmode_cg_iters
+                      << std::setw(9) << std::setprecision(3) << res_ms.dH
+                      << std::setw(7) << (res_ms.accepted ? "Y" : "N")
+                      << std::setw(9) << std::setprecision(3) << t_ms
+                      << std::setw(9) << std::setprecision(3) << res_ms.lowmode_time
+                      << std::setw(9) << std::setprecision(3) << res_ms.highmode_time
+                      << std::setw(8) << res_ms.lowmode_force_evals
+                      << " |" << std::setw(8) << std::setprecision(4)
+                      << gauge_ms.avg_plaq()
+                      << "\n";
+        }
+
+        std::cout << "\n=== Summary over " << n_traj << " trajectories ===\n";
+        std::cout << "  Standard HMC (n_steps=" << total_steps << "):\n";
+        std::cout << "    Accept rate:  " << std::fixed << std::setprecision(1)
+                  << 100.0 * std_accept / n_traj << "%\n";
+        std::cout << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
+                  << std_dH_sum / n_traj << "\n";
+        std::cout << "    Avg CG iters: " << std_cg_sum / n_traj << "\n";
+        std::cout << "    Avg wall time:" << std::fixed << std::setprecision(3)
+                  << std_time_sum / n_traj << "s\n";
+
+        std::cout << "\n  Multi-timescale HMC (n_outer=" << hmc_n_outer
+                  << " n_inner=" << hmc_n_inner << " n_defl=" << hmc_n_defl << "):\n";
+        std::cout << "    Accept rate:  " << std::fixed << std::setprecision(1)
+                  << 100.0 * ms_accept / n_traj << "%\n";
+        std::cout << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
+                  << ms_dH_sum / n_traj << "\n";
+        std::cout << "    Avg CG iters: " << ms_cg_sum / n_traj
+                  << " (high-mode only, " << hmc_n_outer + 1 << " solves + 2 H evals)\n";
+        std::cout << "    Low-mode evals:" << ms_low_evals_sum / n_traj << " avg/traj\n";
+        std::cout << "    Avg wall time:" << std::fixed << std::setprecision(3)
+                  << ms_time_sum / n_traj << "s"
+                  << " (low=" << ms_low_time_sum / n_traj
+                  << "s high=" << ms_high_time_sum / n_traj << "s)\n";
+
+        double cg_ratio = (double)ms_cg_sum / std_cg_sum;
+        double time_ratio = ms_time_sum / std_time_sum;
+        std::cout << "\n  CG iter ratio (MS/Std): " << std::fixed << std::setprecision(2)
+                  << cg_ratio << "x\n";
+        std::cout << "  Wall time ratio (MS/Std): " << std::setprecision(2)
+                  << time_ratio << "x\n";
+        std::cout << "  Wall time speedup: " << std::setprecision(2)
+                  << 1.0 / time_ratio << "x\n";
+
+        return 0;
+    }
+
+    // -----------------------------------------------------------------
+    //  MG Multi-timescale HMC (coarse-grid deflation)
+    // -----------------------------------------------------------------
+    if (hmc_mg_multiscale) {
+        if (mg_levels < 2) {
+            std::cerr << "--hmc-mg-multiscale requires --mg-levels >= 2\n";
+            return 1;
+        }
+
+        using Clock = std::chrono::high_resolution_clock;
+        using Dur = std::chrono::duration<double>;
+
+        int n_traj = hmc_traj > 0 ? hmc_traj : 20;
+        int n_defl = n_defl_vecs > 0 ? n_defl_vecs : hmc_n_defl;
+        int total_steps = hmc_n_outer * hmc_n_inner;
+
+        std::cout << "=== MG Multi-Timescale HMC (Coarse-Grid Deflation) ===\n\n";
+        std::cout << "L=" << L << "  DOF=" << lat.ndof << "  mass=" << mass
+                  << "  beta=" << hmc_beta << "\n";
+        std::cout << "MG levels=" << mg_levels << "  block=" << block_size
+                  << "  k_null=" << k_null << "\n";
+        std::cout << "n_outer=" << hmc_n_outer << "  n_inner=" << hmc_n_inner
+                  << "  total_steps=" << total_steps
+                  << "  tau=" << hmc_tau << "\n";
+        std::cout << "n_defl=" << n_defl << "  traj=" << n_traj << "\n\n";
+
+        // --- Load thermalised config if available ---
+        {
+            std::string cfg = "gauge_L" + std::to_string(L) + "_b"
+                + std::to_string(hmc_beta).substr(0,4) + "_t50.bin";
+            if (gauge.load(cfg)) {
+                std::cout << "--- Loaded thermalised config from " << cfg
+                          << "  <plaq>=" << std::fixed << std::setprecision(4)
+                          << gauge.avg_plaq() << " ---\n";
+            } else {
+                // Try t20 variant
+                cfg = "gauge_L" + std::to_string(L) + "_b"
+                    + std::to_string(hmc_beta).substr(0,4) + "_t20.bin";
+                if (gauge.load(cfg))
+                    std::cout << "--- Loaded config from " << cfg
+                              << "  <plaq>=" << std::fixed << std::setprecision(4)
+                              << gauge.avg_plaq() << " ---\n";
+                else
+                    std::cout << "--- Using cold start (no saved config found) ---\n";
+            }
+        }
+
+        // --- Build MG hierarchy ---
+        std::cout << "--- Building MG hierarchy ---\n";
+        DiracOp D_mg(lat, gauge, mass, wilson_r, c_sw);
+        OpApply A_mg = [&D_mg](const Vec& s, Vec& d) { D_mg.apply_DdagD(s, d); };
+        std::mt19937 rng_mg(seed + 111);
+        auto mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
+                                      coarse_block, 20, rng_mg, w_cycle,
+                                      3, 3, true);
+
+        // Setup sparse coarse operator + TRLM deflation
+        mg.setup_sparse_coarse(A_mg, lat.ndof, n_defl);
+
+        int cdim = mg.sparse_Ac.dim;
+        std::cout << "  Coarse dim: " << cdim << "  n_defl: " << n_defl << "\n";
+
+        // Extract coarse deflation state
+        CoarseDeflState cdefl;
+        cdefl.eigvecs = mg.sparse_Ac.defl_vecs;
+        cdefl.eigvals = mg.sparse_Ac.defl_vals;
+
+        std::cout << "  Coarse eigenvalues: ";
+        for (int i = 0; i < std::min(n_defl, 8); i++)
+            std::cout << std::scientific << std::setprecision(4)
+                      << cdefl.eigvals[i] << " ";
+        if (n_defl > 8) std::cout << "...";
+        std::cout << "\n\n";
+
+        // MG preconditioner
+        std::function<Vec(const Vec&)> mg_precond = [&mg](const Vec& b) -> Vec {
+            return mg.precondition(b);
+        };
+
+        // Prolongator reference
+        auto& P = mg.geo_prolongators[0];
+
+        // --- Run two HMC streams ---
+        GaugeField gauge_std = gauge;
+        GaugeField gauge_ms = gauge;
+        std::mt19937 rng_std(seed + 2000);
+        std::mt19937 rng_ms(seed + 2000);
+
+        // Standard: MG-preconditioned CG at every step
+        HMCParams std_params;
+        std_params.beta = hmc_beta;
+        std_params.tau = hmc_tau;
+        std_params.n_steps = total_steps;
+        std_params.cg_maxiter = max_iter;
+        std_params.cg_tol = tol;
+        std_params.use_mg = false;
+        std_params.c_sw = c_sw;
+
+        // Multi-timescale
+        MGMultiScaleParams ms_params;
+        ms_params.beta = hmc_beta;
+        ms_params.tau = hmc_tau;
+        ms_params.n_outer = hmc_n_outer;
+        ms_params.n_inner = hmc_n_inner;
+        ms_params.cg_maxiter = max_iter;
+        ms_params.cg_tol = tol;
+        ms_params.c_sw = c_sw;
+        if (hmc_omelyan) ms_params.outer_type = OuterIntegrator::Omelyan;
+        if (hmc_force_gradient) ms_params.outer_type = OuterIntegrator::FGI;
+        ms_params.defl_refresh = hmc_defl_refresh;
+
+        std::string outer_name = "Leapfrog";
+        if (hmc_omelyan) outer_name = "Omelyan (2MN)";
+        if (hmc_force_gradient) outer_name = "FGI (MILC PQPQP, 4th order)";
+        std::cout << "Outer: " << outer_name << "  Inner: Leapfrog (gauge+lowmode)\n\n";
+
+        // --- Reversibility test ---
+        if (hmc_revtest) {
+            std::cout << "--- Reversibility Test ---\n";
+            std::cout << "  Running forward → negate π → backward for each integrator...\n\n";
+
+            // Test all configured integrator types
+            struct IntCfg { OuterIntegrator t; const char* name; };
+            std::vector<IntCfg> configs = {
+                {OuterIntegrator::Leapfrog, "Leapfrog"},
+                {OuterIntegrator::Omelyan, "Omelyan"},
+                {OuterIntegrator::FGI, "FGI (MILC)"},
+            };
+
+            std::cout << std::setw(15) << "Integrator"
+                      << std::setw(14) << "||dU||/||U||"
+                      << std::setw(14) << "||dp||/||p||"
+                      << std::setw(12) << "dH_fwd"
+                      << std::setw(12) << "dH_bwd"
+                      << std::setw(14) << "dH_fwd+bwd"
+                      << std::setw(8) << "CG"
+                      << "\n";
+
+            for (auto& cfg : configs) {
+                MGMultiScaleParams rp = ms_params;
+                rp.outer_type = cfg.t;
+                std::mt19937 rng_rev(seed + 9999);
+                auto res = reversibility_test_mg_multiscale(
+                    gauge, lat, mass, wilson_r, rp, cdefl, P, mg_precond, rng_rev);
+
+                std::cout << std::setw(15) << cfg.name
+                          << std::setw(14) << std::scientific << std::setprecision(3) << res.gauge_delta
+                          << std::setw(14) << res.mom_delta
+                          << std::setw(12) << std::setprecision(4) << res.dH_forward
+                          << std::setw(12) << res.dH_backward
+                          << std::setw(14) << std::setprecision(3) << res.dH_forward + res.dH_backward
+                          << std::setw(8) << res.total_cg
+                          << "\n";
+            }
+
+            std::cout << "\n  A time-reversible integrator should give:\n"
+                      << "    ||dU||/||U|| ~ 1e-15 (machine epsilon)\n"
+                      << "    ||dp||/||p|| ~ 1e-15 (machine epsilon)\n"
+                      << "    dH_fwd + dH_bwd ~ 0 (exact cancellation)\n\n";
+            return 0;
+        }
+
+        // Standard also uses MG preconditioner for fair comparison
+        std::function<Vec(const Vec&)> std_precond = mg_precond;
+
+        int std_accept = 0, ms_accept = 0;
+        double std_dH_sum = 0, ms_dH_sum = 0;
+        int std_cg_sum = 0, ms_cg_sum = 0;
+        double std_time_sum = 0, ms_time_sum = 0;
+        double ms_low_time_sum = 0, ms_high_time_sum = 0;
+        int ms_low_evals_sum = 0;
+
+        std::cout << std::setw(5) << "traj"
+                  << " |" << std::setw(7) << "Std_CG"
+                  << std::setw(9) << "Std_dH"
+                  << std::setw(5) << "A"
+                  << std::setw(9) << "Std_t"
+                  << " |" << std::setw(7) << "MS_CG"
+                  << std::setw(9) << "MS_dH"
+                  << std::setw(5) << "A"
+                  << std::setw(9) << "MS_t"
+                  << std::setw(8) << "Low_t"
+                  << std::setw(8) << "Hi_t"
+                  << std::setw(6) << "LEv"
+                  << " |" << std::setw(8) << "<plaq>"
+                  << "\n";
+
+        for (int t = 0; t < n_traj; t++) {
+            // --- Standard HMC (MG-preconditioned) ---
+            auto t0_std = Clock::now();
+            auto res_std = hmc_trajectory(gauge_std, lat, mass, wilson_r,
+                                           std_params, rng_std, &std_precond);
+            double t_std = Dur(Clock::now() - t0_std).count();
+            if (res_std.accepted) std_accept++;
+            std_dH_sum += std::abs(res_std.dH);
+            std_cg_sum += res_std.total_cg_iters;
+            std_time_sum += t_std;
+
+            // --- MG Multi-timescale HMC ---
+            auto t0_ms = Clock::now();
+            auto res_ms = hmc_trajectory_mg_multiscale(gauge_ms, lat, mass, wilson_r,
+                                                        ms_params, cdefl, P,
+                                                        mg_precond, rng_ms);
+            double t_ms = Dur(Clock::now() - t0_ms).count();
+            if (res_ms.accepted) ms_accept++;
+            ms_dH_sum += std::abs(res_ms.dH);
+            ms_cg_sum += res_ms.highmode_cg_iters;
+            ms_time_sum += t_ms;
+            ms_low_time_sum += res_ms.lowmode_time;
+            ms_high_time_sum += res_ms.highmode_time;
+            ms_low_evals_sum += res_ms.lowmode_force_evals;
+
+            // Evolve coarse deflation after MS trajectory
+            // Rebuild sparse Ac for new gauge + RR evolve
+            if (res_ms.accepted) {
+                DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw);
+                OpApply A_new = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
+                mg.sparse_Ac.build(P, A_new, D_new.lat.ndof);
+                evolve_coarse_deflation(cdefl, mg.sparse_Ac);
+            }
+
+            // Periodically do fresh TRLM
+            if (hmc_fresh_period > 0 && (t+1) % hmc_fresh_period == 0) {
+                mg.sparse_Ac.setup_deflation(n_defl);
+                cdefl.eigvecs = mg.sparse_Ac.defl_vecs;
+                cdefl.eigvals = mg.sparse_Ac.defl_vals;
+            }
+
+            std::cout << std::fixed;
+            std::cout << std::setw(5) << t
+                      << " |" << std::setw(7) << res_std.total_cg_iters
+                      << std::setw(9) << std::setprecision(3) << res_std.dH
+                      << std::setw(5) << (res_std.accepted ? "Y" : "N")
+                      << std::setw(9) << std::setprecision(3) << t_std
+                      << " |" << std::setw(7) << res_ms.highmode_cg_iters
+                      << std::setw(9) << std::setprecision(3) << res_ms.dH
+                      << std::setw(5) << (res_ms.accepted ? "Y" : "N")
+                      << std::setw(9) << std::setprecision(3) << t_ms
+                      << std::setw(8) << std::setprecision(3) << res_ms.lowmode_time
+                      << std::setw(8) << std::setprecision(3) << res_ms.highmode_time
+                      << std::setw(6) << res_ms.lowmode_force_evals
+                      << " |" << std::setw(8) << std::setprecision(4)
+                      << gauge_ms.avg_plaq()
+                      << "\n";
+        }
+
+        std::cout << "\n=== Summary over " << n_traj << " trajectories ===\n";
+        std::cout << "  Standard MG-HMC (n_steps=" << total_steps << "):\n";
+        std::cout << "    Accept rate:  " << std::fixed << std::setprecision(1)
+                  << 100.0 * std_accept / n_traj << "%\n";
+        std::cout << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
+                  << std_dH_sum / n_traj << "\n";
+        std::cout << "    Avg CG iters: " << std_cg_sum / n_traj << "\n";
+        std::cout << "    Avg wall time:" << std::fixed << std::setprecision(3)
+                  << std_time_sum / n_traj << "s\n";
+
+        std::cout << "\n  MG Multi-timescale (n_outer=" << hmc_n_outer
+                  << " n_inner=" << hmc_n_inner << " n_defl=" << n_defl << "):\n";
+        std::cout << "    Accept rate:  " << std::fixed << std::setprecision(1)
+                  << 100.0 * ms_accept / n_traj << "%\n";
+        std::cout << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
+                  << ms_dH_sum / n_traj << "\n";
+        std::cout << "    Avg CG iters: " << ms_cg_sum / n_traj
+                  << " (" << hmc_n_outer + 1 << " outer + 2 H evals)\n";
+        std::cout << "    Low-mode evals:" << ms_low_evals_sum / n_traj << " avg/traj\n";
+        std::cout << "    Avg wall time:" << std::fixed << std::setprecision(3)
+                  << ms_time_sum / n_traj << "s"
+                  << " (low=" << ms_low_time_sum / n_traj
+                  << "s high=" << ms_high_time_sum / n_traj << "s)\n";
+
+        if (std_time_sum > 0) {
+            std::cout << "\n  CG ratio (MS/Std): " << std::setprecision(2)
+                      << (double)ms_cg_sum / std_cg_sum << "x\n";
+            std::cout << "  Wall speedup: " << std::setprecision(2)
+                      << std_time_sum / ms_time_sum << "x\n";
+        }
+
+        return 0;
+    }
+
+    // -----------------------------------------------------------------
+    //  Test sparse coarse operator
+    // -----------------------------------------------------------------
+    if (test_sparse_coarse) {
+        if (mg_levels < 2) {
+            std::cerr << "--test-sparse-coarse requires --mg-levels >= 2\n";
+            return 1;
+        }
+
+        int n_defl = n_defl_vecs > 0 ? n_defl_vecs : 16;
+        int ndof = lat.ndof;
+        int coarse_dim_est = (L/block_size) * (L/block_size) * k_null;
+
+        std::cout << "=== Sparse Coarse Eigenvector Evolution Study ===\n\n";
+        std::cout << "L=" << L << "  DOF=" << ndof
+                  << "  coarse_dim=" << coarse_dim_est
+                  << "  n_defl=" << n_defl << "\n";
+
+        // --- Thermalise if requested (save/load gauge configs) ---
+        if (hmc_therm > 0) {
+            std::string cfg_path = "gauge_L" + std::to_string(L)
+                + "_b" + std::to_string(hmc_beta).substr(0,4)
+                + "_t" + std::to_string(hmc_therm) + ".bin";
+
+            if (gauge.load(cfg_path)) {
+                std::cout << "\n--- Loaded thermalised config from " << cfg_path
+                          << "  <plaq>=" << std::fixed << std::setprecision(4)
+                          << gauge.avg_plaq() << " ---\n";
+            } else {
+                std::cout << "\n--- Thermalisation: " << hmc_therm
+                          << " HMC trajectories (beta=" << hmc_beta
+                          << " tau=" << hmc_tau << " steps=" << hmc_steps << ") ---\n";
+
+                DiracOp D_therm(lat, gauge, mass, wilson_r, c_sw);
+                OpApply A_therm = [&D_therm](const Vec& s, Vec& d){ D_therm.apply_DdagD(s, d); };
+                std::mt19937 rng_therm(seed);
+                auto mg_therm = build_mg_hierarchy(D_therm, mg_levels, block_size, k_null,
+                                                    coarse_block, 20, rng_therm, w_cycle,
+                                                    3, 3, true);
+                mg_therm.setup_sparse_coarse(A_therm, ndof, n_defl);
+
+                std::function<Vec(const Vec&)> precond_fn = [&mg_therm](const Vec& b) -> Vec {
+                    return mg_therm.precondition(b);
+                };
+
+                HMCParams hparams;
+                hparams.beta = hmc_beta;
+                hparams.tau = hmc_tau;
+                hparams.n_steps = hmc_steps;
+                hparams.cg_maxiter = max_iter;
+                hparams.cg_tol = tol;
+                hparams.use_mg = false;
+
+                int accepted = 0;
+                for (int t = 0; t < hmc_therm; t++) {
+                    if (t > 0 && t % 5 == 0) {
+                        DiracOp D_rebuild(lat, gauge, mass, wilson_r, c_sw);
+                        OpApply A_rebuild = [&D_rebuild](const Vec& s, Vec& d){ D_rebuild.apply_DdagD(s, d); };
+                        mg_therm = build_mg_hierarchy(D_rebuild, mg_levels, block_size, k_null,
+                                                       coarse_block, 20, rng_therm, w_cycle,
+                                                       3, 3, false);
+                        mg_therm.setup_sparse_coarse(A_rebuild, ndof, n_defl);
+                    }
+
+                    auto res = hmc_trajectory(gauge, lat, mass, wilson_r,
+                                               hparams, rng, &precond_fn);
+                    if (res.accepted) accepted++;
+                    if ((t+1) % 5 == 0 || t == hmc_therm - 1) {
+                        std::cout << "  traj " << t+1 << "/" << hmc_therm
+                                  << "  accept=" << accepted << "/" << (t+1)
+                                  << "  <plaq>=" << std::fixed << std::setprecision(4)
+                                  << gauge.avg_plaq() << "  dH=" << std::scientific
+                                  << res.dH << "\n";
+                    }
+                }
+                std::cout << "  Final <plaq> = " << std::fixed << std::setprecision(4)
+                          << gauge.avg_plaq() << "\n";
+
+                if (gauge.save(cfg_path))
+                    std::cout << "  Saved config to " << cfg_path << "\n";
+            }
+        }
+
+        // --- Sweep over coarse problem difficulty ---
+        // Smaller blocks + more null vectors = bigger coarse dim = harder coarse solve
+        struct CoarseConfig {
+            int blk;    // block size
+            int knull;  // null vectors per block
+            const char* label;
+        };
+        std::vector<CoarseConfig> configs = {
+            {4, 4, "b4k4"},   // coarse_dim = (L/4)^2 * 4  (baseline)
+            {4, 8, "b4k8"},   // coarse_dim = (L/4)^2 * 8  (2x bigger)
+            {2, 4, "b2k4"},   // coarse_dim = (L/2)^2 * 4  (16x bigger)
+            {2, 8, "b2k8"},   // coarse_dim = (L/2)^2 * 8  (32x bigger)
+        };
+
+        int galerkin_period = 5;
+        int n_rhs = 5;
+
+        // CG solve returning {iters, wall_time}
+        struct SolveResult { int iters; double time; };
+        auto solve_timed = [](const SparseCoarseOp& op, const Vec& b,
+                               bool use_defl) -> SolveResult {
+            auto t0 = Clock::now();
+            int dim = op.dim;
+            double bnorm = norm(b);
+            if (bnorm < 1e-30) return {0, 0.0};
+            Vec x = zeros(dim);
+            if (use_defl) {
+                for (int i = 0; i < (int)op.defl_vecs.size(); i++) {
+                    if (op.defl_vals[i] > 1e-14) {
+                        cx coeff = dot(op.defl_vecs[i], b) / op.defl_vals[i];
+                        axpy(coeff, op.defl_vecs[i], x);
+                    }
+                }
+            }
+            Vec Ax(dim);
+            op.apply_to(x, Ax);
+            Vec r(dim);
+            for (int i = 0; i < dim; i++) r[i] = b[i] - Ax[i];
+            Vec p = r;
+            cx rr_val = dot(r, r);
+            int iter = 0;
+            while (iter < 2000) {
+                Vec Ap(dim);
+                op.apply_to(p, Ap);
+                cx pAp = dot(p, Ap);
+                if (std::abs(pAp) < 1e-30) break;
+                cx alpha = rr_val / pAp;
+                for (int i = 0; i < dim; i++) {
+                    x[i] += alpha * p[i];
+                    r[i] -= alpha * Ap[i];
+                }
+                iter++;
+                if (norm(r) / bnorm < 1e-12) break;
+                cx rr_new = dot(r, r);
+                cx beta = rr_new / rr_val;
+                rr_val = rr_new;
+                for (int i = 0; i < dim; i++)
+                    p[i] = r[i] + beta * p[i];
+            }
+            double elapsed = Duration(Clock::now() - t0).count();
+            return {iter, elapsed};
+        };
+
+        for (auto& cfg : configs) {
+            // Check block size divides L
+            if (L % cfg.blk != 0) {
+                std::cout << "\n--- Skipping " << cfg.label
+                          << ": block " << cfg.blk << " does not divide L=" << L << " ---\n";
+                continue;
+            }
+            int nb = L / cfg.blk;
+            int cdim_est = nb * nb * cfg.knull;
+
+            std::cout << "\n==========================================================\n";
+            std::cout << "  Config: " << cfg.label
+                      << "  block=" << cfg.blk << "x" << cfg.blk
+                      << "  k_null=" << cfg.knull
+                      << "  coarse_dim=" << cdim_est << "\n";
+            std::cout << "  Galerkin every " << galerkin_period << " steps, RR every step"
+                      << ", " << n_steps << " configs, " << n_rhs << " RHS/step"
+                      << ", n_defl=" << n_defl << "\n";
+            std::cout << "==========================================================\n";
+
+            // Build MG hierarchy for this config
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
+            std::mt19937 rng_mg(seed + 111);
+            auto mg = build_mg_hierarchy(D, mg_levels, cfg.blk, cfg.knull,
+                                          coarse_block, 20, rng_mg, w_cycle,
+                                          3, 3, true);
+            mg.setup_sparse_coarse(A, ndof, n_defl);
+            int cdim = mg.sparse_Ac.dim;
+            std::cout << "  Actual coarse dim: " << cdim << "\n";
+
+            auto& P_ev = mg.geo_prolongators[0];
+
+            // Evolution study
+            GaugeField gauge_ev = gauge;
+            auto D_ev = std::make_unique<DiracOp>(lat, gauge_ev, mass, wilson_r, c_sw);
+            OpApply A_ev = [&D_ev](const Vec& s, Vec& d){ D_ev->apply_DdagD(s, d); };
+            std::mt19937 rng_ev(seed + 777);
+
+            SparseCoarseOp sac;
+            sac.build(P_ev, A_ev, D_ev->lat.ndof);
+            sac.setup_deflation(n_defl);
+
+            std::cout << "\n" << std::setw(5) << "step"
+                      << std::setw(10) << "Defl_it"
+                      << std::setw(10) << "NoDfl_it"
+                      << std::setw(10) << "Saved%"
+                      << std::setw(12) << "Defl_wall"
+                      << std::setw(12) << "NoDfl_wall"
+                      << std::setw(10) << "Speedup"
+                      << std::setw(10) << "Build_t"
+                      << std::setw(10) << "RR_t"
+                      << std::setw(6) << "Gal?"
+                      << "\n";
+
+            int total_defl_it = 0, total_nodfl_it = 0;
+            double total_defl_wall = 0, total_nodfl_wall = 0;
+            double total_build_t = 0, total_rr_t = 0;
+
+            for (int step = 0; step < n_steps; step++) {
+                MomentumField mom(lat);
+                mom.randomise(rng_ev);
+
+                // Apply gauge update
+                for (int mu = 0; mu < 2; mu++)
+                    for (int s = 0; s < lat.V; s++)
+                        gauge_ev.U[mu][s] *= std::exp(cx(0, eps * mom.pi[mu][s]));
+                D_ev = std::make_unique<DiracOp>(lat, gauge_ev, mass, wilson_r, c_sw);
+                A_ev = [&D_ev](const Vec& s, Vec& d){ D_ev->apply_DdagD(s, d); };
+
+                // Galerkin rebuild only every galerkin_period steps
+                double t_build = 0;
+                bool did_galerkin = (step % galerkin_period == 0);
+                if (did_galerkin) {
+                    auto t0 = Clock::now();
+                    sac.build(P_ev, A_ev, D_ev->lat.ndof);
+                    t_build = Duration(Clock::now() - t0).count();
+                    total_build_t += t_build;
+                }
+
+                // RR evolve every step
+                auto t_rr_start = Clock::now();
+                {
+                    OpApply current_op = sac.as_op();
+                    auto rr_res = rr_evolve(current_op, sac.defl_vecs, sac.dim);
+                    sac.defl_vecs = std::move(rr_res.eigvecs);
+                    sac.defl_vals = std::move(rr_res.eigvals);
+                }
+                double t_rr = Duration(Clock::now() - t_rr_start).count();
+                total_rr_t += t_rr;
+
+                // Solve with the TRUE operator
+                SparseCoarseOp sac_true;
+                sac_true.build(P_ev, A_ev, D_ev->lat.ndof);
+
+                SparseCoarseOp sac_defl = sac_true;
+                sac_defl.defl_vecs = sac.defl_vecs;
+                sac_defl.defl_vals = sac.defl_vals;
+
+                int step_defl_it = 0, step_nodfl_it = 0;
+                double step_defl_wall = 0, step_nodfl_wall = 0;
+                for (int r = 0; r < n_rhs; r++) {
+                    Vec crhs = random_vec(sac_true.dim, rng_ev);
+                    auto res_d = solve_timed(sac_defl, crhs, true);
+                    auto res_n = solve_timed(sac_true, crhs, false);
+                    step_defl_it += res_d.iters;
+                    step_nodfl_it += res_n.iters;
+                    step_defl_wall += res_d.time;
+                    step_nodfl_wall += res_n.time;
+                }
+
+                total_defl_it += step_defl_it;
+                total_nodfl_it += step_nodfl_it;
+                total_defl_wall += step_defl_wall;
+                total_nodfl_wall += step_nodfl_wall;
+
+                double saved_pct = 100.0 * (1.0 - (double)step_defl_it / step_nodfl_it);
+                double speedup = step_nodfl_wall / step_defl_wall;
+
+                std::cout << std::fixed << std::setprecision(4);
+                std::cout << std::setw(5) << step
+                          << std::setw(10) << step_defl_it / n_rhs
+                          << std::setw(10) << step_nodfl_it / n_rhs
+                          << std::setw(9) << std::setprecision(1) << saved_pct << "%"
+                          << std::setw(12) << std::setprecision(4) << step_defl_wall
+                          << std::setw(12) << step_nodfl_wall
+                          << std::setw(9) << std::setprecision(2) << speedup << "x"
+                          << std::setw(10) << std::setprecision(4) << t_build
+                          << std::setw(10) << t_rr
+                          << std::setw(6) << (did_galerkin ? "Y" : "")
+                          << "\n";
+            }
+
+            double avg_defl_it = (double)total_defl_it / (n_steps * n_rhs);
+            double avg_nodfl_it = (double)total_nodfl_it / (n_steps * n_rhs);
+            double overall_saved = 100.0 * (1.0 - avg_defl_it / avg_nodfl_it);
+            double overall_speedup = total_nodfl_wall / total_defl_wall;
+            int n_rebuilds = (n_steps + galerkin_period - 1) / galerkin_period;
+
+            std::cout << "\n  === " << cfg.label << " Summary over " << n_steps << " steps ===\n";
+            std::cout << "    Coarse dim:      " << cdim << "\n";
+            std::cout << "    Deflated CG:     " << std::fixed << std::setprecision(1)
+                      << avg_defl_it << " avg iters/RHS, "
+                      << std::setprecision(3) << total_defl_wall << "s total solve\n";
+            std::cout << "    Undeflated CG:   " << std::setprecision(1)
+                      << avg_nodfl_it << " avg iters/RHS, "
+                      << std::setprecision(3) << total_nodfl_wall << "s total solve\n";
+            std::cout << "    Iter savings:    " << std::setprecision(1) << overall_saved << "%\n";
+            std::cout << "    CG wall speedup: " << std::setprecision(2) << overall_speedup << "x\n";
+            std::cout << "    Overhead:        " << std::setprecision(3)
+                      << total_build_t << "s Galerkin (" << n_rebuilds
+                      << " rebuilds) + " << total_rr_t << "s RR (" << n_steps << " steps)\n";
+            std::cout << "    Net wall time:   Defl = " << std::setprecision(3)
+                      << total_defl_wall + total_build_t + total_rr_t << "s"
+                      << "  vs  NoDfl = " << total_nodfl_wall << "s\n";
+        }
+
+        return 0;
+    }
+
+    // -----------------------------------------------------------------
     //  Test deflation mode
     // -----------------------------------------------------------------
     if (test_deflation) {
@@ -295,7 +1148,7 @@ int main(int argc, char** argv) {
         int ndefl = n_defl_vecs > 0 ? n_defl_vecs : k_null * 4;
         std::cout << "=== Test: Coarse Eigenvector Prolongation ===\n\n";
 
-        DiracOp D(lat, gauge, mass, wilson_r);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
         std::mt19937 rng_mg(seed);
         auto mg = build_mg_hierarchy(D, mg_levels, block_size, k_null,
@@ -923,7 +1776,7 @@ int main(int argc, char** argv) {
                       << std::setprecision(3) << best_amin
                       << ", a_max=" << cheb_amax << ") ---\n";
             print_header();
-            for (int deg : {4, 8, 16, 32, 64}) {
+            for (int deg : {4, 8, 16, 32}) {
                 for (int extra : {16, 24, 32, 48, 64, 96}) {
                     int nkr = n_ev + extra;
                     if (nkr > lat.ndof) continue;
@@ -932,6 +1785,556 @@ int main(int argc, char** argv) {
                     run_trlm_cheb(lbl, best_amin, cheb_amax, deg, nkr);
                 }
                 std::cout << std::string(60, '-') << "\n";
+            }
+        }
+
+        // =============================================================
+        // Method 8: Force-based vs RR eigenvector evolution
+        // =============================================================
+        // Compare two approaches for evolving eigenvectors across MD steps:
+        // 1) Force-based: update arrow matrix using δD from momentum (0 matvecs)
+        // 2) RR projection: apply A_new and re-project (k matvecs)
+        std::cout << "\n=== Method 8: Force-Based vs RR Eigenvector Evolution ===\n";
+        std::cout << "  Physical MD evolution (momentum-driven gauge updates)\n\n";
+        {
+            int k_want = n_defl_vecs > 0 ? n_defl_vecs : ndefl;
+            k_want = std::min(k_want, lat.ndof / 4);
+            int n_md_steps = std::min(n_steps, 50);
+            double hmc_beta_m8 = 2.0;
+
+            for (double dt : {0.01, 0.02, 0.05}) {
+              for (int k_total : {k_want, k_want * 4, k_want * 8}) {
+                if (k_total > lat.ndof / 2) continue;
+                std::cout << "\n  ====== dt=" << std::fixed << std::setprecision(4) << dt
+                          << ", k_want=" << k_want << ", k_total=" << k_total << " ======\n";
+
+                // Run both methods on identical gauge evolution
+                for (int method : {0, 1}) {
+                    const char* name = method == 0
+                        ? "Force-based (0 matvecs/step)"
+                        : "RR projection (k matvecs/step)";
+                    std::cout << "\n  --- " << name << " ---\n";
+                    std::cout << std::setw(5) << "Step"
+                              << std::setw(8) << "Plaq"
+                              << std::setw(14) << "ev[0]"
+                              << std::setw(14) << "ev[0]_true"
+                              << std::setw(10) << "rel_err"
+                              << std::setw(12) << "true_res"
+                              << "\n";
+
+                    GaugeField gauge_m8 = gauge;
+                    MomentumField mom_m8(lat);
+                    std::mt19937 rng_m8(seed + 8888);
+                    mom_m8.randomise(rng_m8);
+
+                    auto D_m8 = std::make_unique<DiracOp>(lat, gauge_m8, mass, wilson_r, c_sw);
+                    OpApply A_m8 = [&D_m8](const Vec& s, Vec& d){ D_m8->apply_DdagD(s, d); };
+
+                    // Initial eigenvectors from TRLM
+                    auto res0 = trlm_eigensolver(A_m8, lat.ndof, k_total,
+                                                  /*n_kr=*/0, /*max_restarts=*/200, eig_tol_m7);
+                    if (!res0.converged) {
+                        std::cout << "  TRLM failed\n";
+                        continue;
+                    }
+                    int init_mv = res0.iterations;
+
+                    std::vector<Vec> evecs = std::move(res0.eigvecs);
+                    std::vector<double> evals = std::move(res0.eigvals);
+
+                    // For force-based: store w_i = D v_i
+                    std::vector<Vec> Dv_store;
+                    if (method == 0) {
+                        Dv_store.resize(k_total);
+                        for (int i = 0; i < k_total; i++) {
+                            Dv_store[i].resize(lat.ndof);
+                            D_m8->apply(evecs[i], Dv_store[i]);
+                        }
+                    }
+
+                    int total_matvecs = 0;
+                    int n_refreshes = 0;
+                    int total_refresh_mv = 0;
+
+                    for (int step = 0; step < n_md_steps; step++) {
+                        if (method == 0) {
+                            // Force-based: compute δD using momentum BEFORE gauge update
+                            auto dD = [&D_m8, &mom_m8, dt](const Vec& src, Vec& dst) {
+                                D_m8->apply_delta_D(src, dst, mom_m8.pi, dt);
+                            };
+                            auto dD_dag = [&D_m8, &mom_m8, dt, ndof=lat.ndof](const Vec& src, Vec& dst) {
+                                int V = ndof / 2;
+                                Vec g5src(ndof);
+                                for (int sv = 0; sv < V; sv++) {
+                                    g5src[2*sv]   = src[2*sv];
+                                    g5src[2*sv+1] = -src[2*sv+1];
+                                }
+                                Vec g5dst(ndof);
+                                D_m8->apply_delta_D(g5src, g5dst, mom_m8.pi, dt);
+                                for (int sv = 0; sv < V; sv++) {
+                                    dst[2*sv]   = g5dst[2*sv];
+                                    dst[2*sv+1] = -g5dst[2*sv+1];
+                                }
+                            };
+
+                            auto fe = force_evolve(evecs, evals, Dv_store,
+                                                   dD, dD_dag, lat.ndof);
+                            evecs = std::move(fe.eigvecs);
+                            evals = std::move(fe.eigvals);
+                            Dv_store = std::move(fe.Dv);
+                        }
+
+                        // Physical MD gauge update: U -> exp(i dt pi) U
+                        for (int mu = 0; mu < 2; mu++)
+                            for (int sv = 0; sv < lat.V; sv++)
+                                gauge_m8.U[mu][sv] *= std::exp(cx(0, dt * mom_m8.pi[mu][sv]));
+
+                        D_m8 = std::make_unique<DiracOp>(lat, gauge_m8, mass, wilson_r, c_sw);
+
+                        if (method == 1) {
+                            // RR projection
+                            auto rr = rr_evolve(A_m8, evecs, lat.ndof);
+                            evecs = std::move(rr.eigvecs);
+                            evals = std::move(rr.eigvals);
+                            total_matvecs += rr.matvecs;
+                        }
+
+                        // Update momentum with gauge force (leapfrog)
+                        std::array<RVec, 2> gf;
+                        gauge_force(gauge_m8, hmc_beta_m8, gf);
+                        for (int mu = 0; mu < 2; mu++)
+                            for (int sv = 0; sv < lat.V; sv++)
+                                mom_m8.pi[mu][sv] += dt * gf[mu][sv];
+
+                        // Compute true residual of k_want eigenvectors periodically
+                        if (step % 5 == 0 || step == n_md_steps - 1) {
+                            // Max residual over wanted eigenvectors
+                            double max_true_res = 0;
+                            for (int iv = 0; iv < std::min(k_want, k_total); iv++) {
+                                Vec Av(lat.ndof);
+                                A_m8(evecs[iv], Av);
+                                double av_norm = norm(Av);
+                                Vec r_vec = Av;
+                                axpy(cx(-evals[iv]), evecs[iv], r_vec);
+                                double res_iv = norm(r_vec) / std::max(av_norm, 1e-30);
+                                max_true_res = std::max(max_true_res, res_iv);
+                            }
+                            total_matvecs += std::min(k_want, k_total);
+
+                            auto true_eig = trlm_eigensolver(A_m8, lat.ndof, 1,
+                                                  /*n_kr=*/0, /*max_restarts=*/200, 1e-10);
+                            double true_ev0 = true_eig.converged ? true_eig.eigvals[0] : -1;
+                            double ev_err = true_ev0 > 0 ?
+                                std::abs(evals[0] - true_ev0) / std::max(std::abs(true_ev0), 1e-30) : -1;
+
+                            std::cout << std::setw(5) << step
+                                      << std::setw(8) << std::fixed << std::setprecision(4) << gauge_m8.avg_plaq()
+                                      << std::setw(14) << std::scientific << std::setprecision(6) << evals[0]
+                                      << std::setw(14) << std::scientific << std::setprecision(6) << true_ev0
+                                      << std::setw(10) << std::scientific << std::setprecision(2) << ev_err
+                                      << std::setw(12) << std::scientific << std::setprecision(2) << max_true_res;
+
+                            // Adaptive refresh if residual too large
+                            if (max_true_res > 0.5) {
+                                auto refresh = trlm_eigensolver(A_m8, lat.ndof, k_total,
+                                                      /*n_kr=*/0, /*max_restarts=*/200, eig_tol_m7);
+                                if (refresh.converged) {
+                                    evecs = std::move(refresh.eigvecs);
+                                    evals = std::move(refresh.eigvals);
+                                    total_refresh_mv += refresh.iterations;
+                                    n_refreshes++;
+                                    std::cout << "  *REF";
+                                    if (method == 0) {
+                                        Dv_store.resize(k_total);
+                                        for (int i = 0; i < k_total; i++) {
+                                            Dv_store[i].resize(lat.ndof);
+                                            D_m8->apply(evecs[i], Dv_store[i]);
+                                        }
+                                    }
+                                }
+                            }
+                            std::cout << "\n";
+                        }
+                    }
+                    std::cout << "  Tracking matvecs: " << total_matvecs
+                              << ", refresh: " << total_refresh_mv << " (" << n_refreshes << "x)"
+                              << ", init: " << init_mv
+                              << ", TOTAL: " << (total_matvecs + total_refresh_mv + init_mv) << "\n";
+                }
+              }
+            }
+        }
+
+        // =============================================================
+        // Method 9: Hybrid tracker — force + Lanczos extension
+        // =============================================================
+        // Track n_kr Krylov subspace with force-based rotation,
+        // periodically extend with Lanczos to bring in fresh directions.
+        std::cout << "\n=== Method 9: Hybrid Force + Lanczos Extension ===\n";
+        std::cout << "  n_kr Krylov vectors tracked, periodic Lanczos refresh\n\n";
+        {
+            int n_ev_h = n_defl_vecs > 0 ? n_defl_vecs : ndefl;
+            n_ev_h = std::min(n_ev_h, lat.ndof / 4);
+            int n_md_steps_h = std::min(n_steps, 50);
+            double hmc_beta_h = 2.0;
+
+            for (double dt : {0.01, 0.05}) {
+              // Try different Lanczos extension intervals
+              for (int ext_interval : {1, 2, 5}) {
+                std::cout << "  ====== dt=" << std::fixed << std::setprecision(3) << dt
+                          << ", n_ev=" << n_ev_h
+                          << ", Lanczos every " << ext_interval << " steps ======\n";
+
+                GaugeField gauge_h = gauge;
+                MomentumField mom_h(lat);
+                std::mt19937 rng_h(seed + 8888);
+                mom_h.randomise(rng_h);
+
+                auto D_h = std::make_unique<DiracOp>(lat, gauge_h, mass, wilson_r, c_sw);
+                OpApply A_h = [&D_h](const Vec& s, Vec& d){ D_h->apply_DdagD(s, d); };
+                auto applyD = [&D_h](const Vec& s, Vec& d){ D_h->apply(s, d); };
+
+                // Initial TRLM — use larger Krylov space for better tracking
+                int n_kr_h = std::max(4 * n_ev_h, 2 * n_ev_h + 16);
+                n_kr_h = std::min(n_kr_h, lat.ndof / 2);
+                auto res0 = trlm_eigensolver(A_h, lat.ndof, n_ev_h,
+                                              n_kr_h, /*max_restarts=*/200, eig_tol_m7);
+                if (!res0.converged) {
+                    std::cout << "  Initial TRLM failed\n\n";
+                    continue;
+                }
+                int init_mv = res0.iterations;
+
+                // Initialise hybrid tracker
+                auto tracker = hybrid_tracker_init(A_h, applyD, res0,
+                                                    lat.ndof, n_ev_h, n_kr_h);
+
+                std::cout << "  n_kr=" << n_kr_h << ", init_mv=" << init_mv << "\n";
+                std::cout << std::setw(5) << "Step"
+                          << std::setw(8) << "Plaq"
+                          << std::setw(14) << "ev[0]"
+                          << std::setw(14) << "ev[0]_true"
+                          << std::setw(10) << "rel_err"
+                          << std::setw(10) << "max_res"
+                          << std::setw(8) << "mv"
+                          << std::setw(6) << "type"
+                          << "\n";
+
+                int total_track_mv = 0;
+
+                for (int step = 0; step < n_md_steps_h; step++) {
+                    bool do_lanczos = (step % ext_interval == 0);
+
+                    if (!do_lanczos) {
+                        // Force-based step: compute δD before gauge update
+                        auto dD = [&D_h, &mom_h, dt](const Vec& src, Vec& dst) {
+                            D_h->apply_delta_D(src, dst, mom_h.pi, dt);
+                        };
+
+                        auto hr = hybrid_force_step(tracker, dD);
+                        total_track_mv += hr.matvecs;
+                    }
+
+                    // Physical MD gauge update
+                    for (int mu = 0; mu < 2; mu++)
+                        for (int sv = 0; sv < lat.V; sv++)
+                            gauge_h.U[mu][sv] *= std::exp(cx(0, dt * mom_h.pi[mu][sv]));
+
+                    D_h = std::make_unique<DiracOp>(lat, gauge_h, mass, wilson_r, c_sw);
+
+                    if (do_lanczos) {
+                        // Lanczos extension step: brings new directions
+                        int n_ext = n_kr_h - n_ev_h;
+                        auto hr = hybrid_lanczos_step(tracker, A_h, applyD, n_ext);
+                        total_track_mv += hr.matvecs;
+
+                        // Get true eigenvalue for comparison
+                        auto true_eig = trlm_eigensolver(A_h, lat.ndof, 1,
+                                              /*n_kr=*/0, /*max_restarts=*/200, 1e-10);
+                        double true_ev0 = true_eig.converged ? true_eig.eigvals[0] : -1;
+                        double ev_err = true_ev0 > 0 ?
+                            std::abs(hr.eigvals[0] - true_ev0) / std::max(std::abs(true_ev0), 1e-30) : -1;
+
+                        std::cout << std::setw(5) << step
+                                  << std::setw(8) << std::fixed << std::setprecision(4) << gauge_h.avg_plaq()
+                                  << std::setw(14) << std::scientific << std::setprecision(6) << hr.eigvals[0]
+                                  << std::setw(14) << std::scientific << std::setprecision(6) << true_ev0
+                                  << std::setw(10) << std::scientific << std::setprecision(2) << ev_err
+                                  << std::setw(10) << std::scientific << std::setprecision(2) << hr.max_residual
+                                  << std::setw(8) << hr.matvecs
+                                  << std::setw(6) << "Lcz"
+                                  << "\n";
+                    }
+
+                    // Update momentum (leapfrog)
+                    std::array<RVec, 2> gf;
+                    gauge_force(gauge_h, hmc_beta_h, gf);
+                    for (int mu = 0; mu < 2; mu++)
+                        for (int sv = 0; sv < lat.V; sv++)
+                            mom_h.pi[mu][sv] += dt * gf[mu][sv];
+                }
+
+                // Compare with fresh TRLM cost
+                int fresh_every = init_mv * n_md_steps_h;
+                std::cout << "  Total tracking matvecs: " << total_track_mv
+                          << " + init: " << init_mv
+                          << " = " << (total_track_mv + init_mv)
+                          << " (vs fresh every step: " << fresh_every << ")\n\n";
+              }
+            }
+        }
+
+        // =============================================================
+        // Method 10: Multi-source EigenTracker
+        // =============================================================
+        // Combines four information sources:
+        //   1. Force-based evolution (0 D†D matvecs)
+        //   2. CG Ritz harvesting (0 extra matvecs — from fermion solve)
+        //   3. Chebyshev-filtered probes (periodic, ~20 matvecs each)
+        //   4. Coarse-grid spectral proxy (nearly free)
+        //
+        // Runs a physical MD trajectory with leapfrog momentum updates.
+        // At each step, the tracker maintains eigenvectors using cheap
+        // sources and is compared against fresh TRLM ground truth.
+        std::cout << "\n=== Method 10: Multi-Source EigenTracker ===\n";
+        std::cout << "  Pool-based tracker: force + solver harvest + Chebyshev probe\n\n";
+        {
+            int n_ev_t = n_defl_vecs > 0 ? n_defl_vecs : ndefl;
+            n_ev_t = std::min(n_ev_t, lat.ndof / 4);
+            int pool_cap = std::max(3 * n_ev_t, 2 * n_ev_t + 12);
+            pool_cap = std::min(pool_cap, lat.ndof / 2);
+            int n_md_steps_t = std::min(n_steps, 50);
+            double hmc_beta_t = 2.0;
+            int cheb_degree = 20;
+            int cheb_interval = 5;  // Chebyshev probe every N steps
+
+            // Power iteration to estimate λ_max once
+            GaugeField gauge_lmax = gauge;
+            DiracOp D_lmax(lat, gauge_lmax, mass, wilson_r, c_sw);
+            OpApply A_lmax = [&D_lmax](const Vec& s, Vec& d){ D_lmax.apply_DdagD(s, d); };
+            double lambda_max_est = 0;
+            {
+                std::mt19937 rng_pi(77777);
+                Vec v = random_vec(lat.ndof, rng_pi);
+                for (int it = 0; it < 30; it++) {
+                    Vec Av(lat.ndof);
+                    A_lmax(v, Av);
+                    double nAv = norm(Av);
+                    lambda_max_est = nAv / norm(v);
+                    v = Av;
+                    scale(v, cx(1.0 / nAv));
+                }
+                lambda_max_est *= 1.2; // safety margin
+            }
+
+            for (double dt : {0.01, 0.05}) {
+              // Sweep: force-only, force+harvest, force+harvest+cheb
+              struct Strategy {
+                  const char* name;
+                  bool use_harvest;
+                  bool use_cheb;
+                  int  perturb_order;  // 0=none, 1/2/3=perturbation order
+              };
+              Strategy strategies[] = {
+                  {"Force only    ", false, false, 0},
+                  {"Force+Ptb(1)  ", false, false, 1},
+                  {"Force+Ptb(2)  ", false, false, 2},
+                  {"Force+Ptb(3)  ", false, false, 3},
+                  {"F+Ptb(2)+Harv ", true,  false, 2},
+                  {"F+Ptb(2)+H+Ch ", true,  true,  2},
+              };
+
+              for (auto& strat : strategies) {
+                std::cout << "  ====== dt=" << std::fixed << std::setprecision(3) << dt
+                          << ", pool=" << pool_cap
+                          << ", " << strat.name << " ======\n";
+
+                GaugeField gauge_t = gauge;
+                MomentumField mom_t(lat);
+                std::mt19937 rng_t(seed + 9999);
+                mom_t.randomise(rng_t);
+
+                auto D_t = std::make_unique<DiracOp>(lat, gauge_t, mass, wilson_r, c_sw);
+                OpApply A_t = [&D_t](const Vec& s, Vec& d){ D_t->apply_DdagD(s, d); };
+                auto applyD_t = [&D_t](const Vec& s, Vec& d){ D_t->apply(s, d); };
+
+                // Initial TRLM
+                int n_kr_t = std::max(4 * n_ev_t, 2 * n_ev_t + 16);
+                n_kr_t = std::min(n_kr_t, lat.ndof / 2);
+                auto res0 = trlm_eigensolver(A_t, lat.ndof, n_ev_t,
+                                              n_kr_t, /*max_restarts=*/200, eig_tol_m7);
+                if (!res0.converged) {
+                    std::cout << "  Initial TRLM failed\n\n";
+                    continue;
+                }
+                int init_mv = res0.iterations;
+
+                // Initialise tracker
+                EigenTracker tracker;
+                tracker.init(res0, applyD_t, lat.ndof, n_ev_t, pool_cap);
+
+                int total_tracker_mv = 0;  // D†D matvecs used by tracker
+                int total_solver_mv = 0;   // CG iterations (needed anyway)
+                int total_true_mv = 0;     // TRLM for ground truth
+
+                std::cout << "  pool_cap=" << pool_cap << ", init_mv=" << init_mv << "\n";
+                std::cout << std::setw(5) << "Step"
+                          << std::setw(8) << "Plaq"
+                          << std::setw(14) << "ev[0]"
+                          << std::setw(14) << "ev[0]_true"
+                          << std::setw(10) << "rel_err"
+                          << std::setw(10) << "max_res"
+                          << std::setw(8) << "trk_mv"
+                          << std::setw(7) << "cg_it"
+                          << std::setw(6) << "absorb"
+                          << std::setw(6) << "pool"
+                          << "\n";
+
+                for (int step = 0; step < n_md_steps_t; step++) {
+                    int step_tracker_mv = 0;
+
+                    // 1. Perturbation-directed extension BEFORE gauge update
+                    //    Each order builds a deeper perturbation Krylov subspace:
+                    //      Order 1: span{v, δA v}
+                    //      Order 2: span{v, δA v, (δA)² v}
+                    //      Order p: span{v, δA v, ..., (δA)^p v}
+                    //    After each call, compress() rotates to optimal Ritz vectors,
+                    //    so the next call naturally captures the next order correction.
+                    if (strat.perturb_order > 0) {
+                        auto dD = [&D_t, &mom_t, dt](const Vec& src, Vec& dst) {
+                            D_t->apply_delta_D(src, dst, mom_t.pi, dt);
+                        };
+                        // δD† v = γ₅ δD(γ₅ v) for Wilson-Dirac
+                        auto dD_dag = [&D_t, &mom_t, dt](const Vec& src, Vec& dst) {
+                            int V = D_t->lat.V;
+                            Vec g5src(src.size());
+                            for (int s = 0; s < V; s++) {
+                                g5src[2*s]   =  src[2*s];
+                                g5src[2*s+1] = -src[2*s+1];
+                            }
+                            Vec g5dst(src.size());
+                            D_t->apply_delta_D(g5src, g5dst, mom_t.pi, dt);
+                            dst.resize(src.size());
+                            for (int s = 0; s < V; s++) {
+                                dst[2*s]   =  g5dst[2*s];
+                                dst[2*s+1] = -g5dst[2*s+1];
+                            }
+                        };
+                        auto D_dag = [&D_t](const Vec& src, Vec& dst) {
+                            D_t->apply_dag(src, dst);
+                        };
+                        auto D_fwd = [&D_t](const Vec& src, Vec& dst) {
+                            D_t->apply(src, dst);
+                        };
+                        for (int ord = 0; ord < strat.perturb_order; ord++) {
+                            tracker.perturbation_extend(dD, dD_dag, D_dag, D_fwd);
+                        }
+                        // Cost: order × n_ev × ~1.25 D†D
+                        step_tracker_mv += strat.perturb_order * n_ev_t * 5 / 4;
+                    }
+
+                    // 2. Force-evolve tracker BEFORE gauge update
+                    //    (uses current D and momentum to compute δD)
+                    {
+                        auto dD = [&D_t, &mom_t, dt](const Vec& src, Vec& dst) {
+                            D_t->apply_delta_D(src, dst, mom_t.pi, dt);
+                        };
+                        tracker.force_update(dD);
+                        // force_update: 0 D†D matvecs
+                    }
+
+                    // 3. Physical MD gauge update: U → exp(iεπ) U
+                    for (int mu = 0; mu < 2; mu++)
+                        for (int sv = 0; sv < lat.V; sv++)
+                            gauge_t.U[mu][sv] *= std::exp(cx(0, dt * mom_t.pi[mu][sv]));
+
+                    // Recreate Dirac operator for new gauge
+                    D_t = std::make_unique<DiracOp>(lat, gauge_t, mass, wilson_r, c_sw);
+
+                    // 4. CG solve (simulating fermion force computation)
+                    //    Harvest Ritz pairs for free
+                    int cg_iters = 0;
+                    int n_absorbed = 0;
+                    if (strat.use_harvest) {
+                        Vec rhs_t = random_vec(lat.ndof, rng_t);
+                        std::vector<RitzPair> cg_ritz;
+                        auto cg_res = cg_solve_ritz(A_t, lat.ndof, rhs_t,
+                                                     max_iter, tol,
+                                                     n_ev_t, cg_ritz);
+                        cg_iters = cg_res.iterations;
+                        total_solver_mv += cg_iters;
+
+                        // Absorb Ritz vectors into tracker
+                        if (!cg_ritz.empty()) {
+                            std::vector<Vec> ritz_vecs;
+                            for (auto& rp : cg_ritz)
+                                ritz_vecs.push_back(std::move(rp.vector));
+                            n_absorbed = tracker.absorb(ritz_vecs, applyD_t);
+                            step_tracker_mv += n_absorbed; // D applications
+                        }
+                    }
+
+                    // 5. Chebyshev probe (periodic)
+                    if (strat.use_cheb && step % cheb_interval == 0) {
+                        tracker.chebyshev_probe(A_t, applyD_t, rng_t,
+                                                lambda_max_est, cheb_degree);
+                        step_tracker_mv += cheb_degree + 1; // D†D + 1 D application
+                    }
+
+                    total_tracker_mv += step_tracker_mv;
+
+                    // 6. Ground truth: fresh TRLM (for comparison only)
+                    auto true_eig = trlm_eigensolver(A_t, lat.ndof, 1,
+                                          /*n_kr=*/0, /*max_restarts=*/200, 1e-10);
+                    total_true_mv += true_eig.iterations;
+                    double true_ev0 = true_eig.converged ? true_eig.eigvals[0] : -1;
+
+                    double ev_err = (true_ev0 > 0 && !tracker.eigvals.empty()) ?
+                        std::abs(tracker.eigvals[0] - true_ev0) /
+                        std::max(std::abs(true_ev0), 1e-30) : -1;
+
+                    // Compute residual every few steps (costs n_ev matvecs)
+                    double max_res = -1;
+                    if (step % 5 == 0 || step == n_md_steps_t - 1) {
+                        max_res = tracker.max_residual(A_t);
+                        total_tracker_mv += n_ev_t;
+                    }
+
+                    std::cout << std::setw(5) << step
+                              << std::setw(8) << std::fixed << std::setprecision(4)
+                              << gauge_t.avg_plaq()
+                              << std::setw(14) << std::scientific << std::setprecision(6)
+                              << (tracker.eigvals.empty() ? -1.0 : tracker.eigvals[0])
+                              << std::setw(14) << std::scientific << std::setprecision(6)
+                              << true_ev0
+                              << std::setw(10) << std::scientific << std::setprecision(2)
+                              << ev_err
+                              << std::setw(10) << std::scientific << std::setprecision(2)
+                              << max_res
+                              << std::setw(8) << step_tracker_mv
+                              << std::setw(7) << cg_iters
+                              << std::setw(6) << n_absorbed
+                              << std::setw(6) << tracker.pool_used()
+                              << "\n";
+
+                    // Update momentum (leapfrog)
+                    std::array<RVec, 2> gf;
+                    gauge_force(gauge_t, hmc_beta_t, gf);
+                    for (int mu = 0; mu < 2; mu++)
+                        for (int sv = 0; sv < lat.V; sv++)
+                            mom_t.pi[mu][sv] += dt * gf[mu][sv];
+                }
+
+                // Summary
+                int fresh_cost = total_true_mv;  // what it costs to do TRLM every step
+                std::cout << "  --- Summary ---\n";
+                std::cout << "  Tracker overhead: " << total_tracker_mv << " D†D matvecs\n";
+                std::cout << "  CG solver (needed anyway): " << total_solver_mv << " iters\n";
+                std::cout << "  Fresh TRLM (ground truth): " << fresh_cost << " total matvecs\n";
+                std::cout << "  Tracker/Fresh ratio: " << std::fixed << std::setprecision(1)
+                          << 100.0 * total_tracker_mv / std::max(fresh_cost, 1)
+                          << "%\n\n";
+              }
             }
         }
 
@@ -959,7 +2362,7 @@ int main(int argc, char** argv) {
 
         for (int step = 0; step < n_steps; step++) {
             perturb_gauge(gauge, rng, eps);
-            DiracOp D(lat, gauge, mass, wilson_r);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
             Vec rhs = random_vec(lat.ndof, rng);
             OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
 
@@ -1011,7 +2414,7 @@ int main(int argc, char** argv) {
     // -----------------------------------------------------------------
     auto t_setup_start = Clock::now();
 
-    DiracOp D0(lat, gauge, mass, wilson_r);
+    DiracOp D0(lat, gauge, mass, wilson_r, c_sw);
 
     std::unique_ptr<MGHierarchy> mg_stale;
 
@@ -1107,7 +2510,7 @@ int main(int argc, char** argv) {
 
         for (int step = 0; step < n_steps; step++) {
             perturb_gauge(gauge, rng, eps);
-            DiracOp D(lat, gauge, mass, wilson_r);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
             Vec rhs = random_vec(lat.ndof, rng);
             OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
 
@@ -1293,7 +2696,7 @@ int main(int argc, char** argv) {
 
         for (int step = 0; step < n_steps; step++) {
             perturb_gauge(gauge, rng, eps);
-            DiracOp D(lat, gauge, mass, wilson_r);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
             Vec rhs = random_vec(lat.ndof, rng);
 
             auto t0 = Clock::now();

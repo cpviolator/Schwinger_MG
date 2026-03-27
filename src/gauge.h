@@ -4,6 +4,7 @@
 #include <array>
 #include <random>
 #include <cmath>
+#include <fstream>
 #include <omp.h>
 
 struct GaugeField {
@@ -32,5 +33,26 @@ struct GaugeField {
         #pragma omp parallel for reduction(+:s) schedule(static) if(lat.V > OMP_MIN_SIZE)
         for (int i = 0; i < lat.V; i++) s += std::real(plaq(i));
         return s / lat.V;
+    }
+
+    bool save(const std::string& path) const {
+        std::ofstream f(path, std::ios::binary);
+        if (!f) return false;
+        int V = lat.V;
+        f.write(reinterpret_cast<const char*>(&V), sizeof(V));
+        for (int mu = 0; mu < 2; mu++)
+            f.write(reinterpret_cast<const char*>(U[mu].data()), V * sizeof(cx));
+        return f.good();
+    }
+
+    bool load(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        int V;
+        f.read(reinterpret_cast<char*>(&V), sizeof(V));
+        if (V != lat.V) return false;
+        for (int mu = 0; mu < 2; mu++)
+            f.read(reinterpret_cast<char*>(U[mu].data()), V * sizeof(cx));
+        return f.good();
     }
 };

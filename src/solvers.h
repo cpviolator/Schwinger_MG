@@ -38,6 +38,10 @@ CGResult cg_solve(
     const OpApply& A, int n, const Vec& rhs,
     int max_iter, double tol);
 
+CGResult cg_solve_x0(
+    const OpApply& A, int n, const Vec& rhs,
+    const Vec& x0, int max_iter, double tol);
+
 CGResult cg_solve_precond(
     const OpApply& A, int n, const Vec& rhs,
     const std::function<Vec(const Vec&)>& precond,
@@ -78,3 +82,16 @@ FCGResult fcg_solve_mg(
     const OpApply& A, int n, const Vec& rhs,
     MGHierarchy& mg,
     int max_iter, double tol, int truncation = 20);
+
+// CG solve with Lanczos Ritz extraction.
+// Exploits the CG–Lanczos equivalence: CG implicitly builds a Lanczos
+// tridiagonal T from the α,β coefficients.  After convergence we diagonalise
+// T and reconstruct Ritz vectors from the stored (normalised) residuals.
+// Cost: identical to plain CG — the Ritz extraction is a post-processing
+// step on already-computed data (O(m²) eigensolver + O(m·n) reconstruction,
+// where m = number of CG iterations).
+CGResult cg_solve_ritz(
+    const OpApply& A, int n, const Vec& rhs,
+    int max_iter, double tol,
+    int n_ritz, std::vector<RitzPair>& ritz_out,
+    int max_lanczos_vecs = 0);

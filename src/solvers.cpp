@@ -57,6 +57,60 @@ CGResult cg_solve(
 }
 
 // ---------------------------------------------------------------
+//  CG with non-zero initial guess
+// ---------------------------------------------------------------
+CGResult cg_solve_x0(
+    const OpApply& A,
+    int n,
+    const Vec& rhs,
+    const Vec& x0,
+    int max_iter,
+    double tol
+) {
+    double rhs_norm = norm(rhs);
+    if (rhs_norm < 1e-30) return {zeros(n), 0, 0.0};
+
+    Vec x = x0;
+    Vec Ax(n);
+    A(x, Ax);
+    Vec r(n);
+    #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+    for (int i = 0; i < n; i++) r[i] = rhs[i] - Ax[i];
+
+    Vec p(r);
+    cx rr = dot(r, r);
+    int iter = 0;
+
+    while (iter < max_iter) {
+        Vec Ap(n);
+        A(p, Ap);
+        cx pAp = dot(p, Ap);
+        cx alpha = rr / pAp;
+
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * Ap[i];
+        }
+        iter++;
+
+        double rnorm = norm(r);
+        if (rnorm / rhs_norm < tol) break;
+
+        cx rr_new = dot(r, r);
+        cx beta = rr_new / rr;
+        rr = rr_new;
+
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++)
+            p[i] = r[i] + beta * p[i];
+    }
+
+    double final_res = norm(r) / rhs_norm;
+    return {x, iter, final_res};
+}
+
+// ---------------------------------------------------------------
 //  Preconditioned CG for HPD operator with HPD preconditioner
 //  Requires M^{-1} to be hermitian positive definite (symmetric MG).
 // ---------------------------------------------------------------
@@ -306,6 +360,124 @@ FCGResult fcg_solve(
         P_dirs.push_back(std::move(p));
         AP_dirs.push_back(std::move(Ap));
         ApAp.push_back(ApAp_val);
+    }
+
+    double final_res = norm(r) / rhs_norm;
+    return {x, iter, final_res};
+}
+
+// ---------------------------------------------------------------
+//  CG with Lanczos Ritz extraction
+//  Same convergence as plain CG; additionally stores normalised
+//  residuals q_k = r_k/||r_k|| and builds the implicit Lanczos
+//  tridiagonal T from the CG α,β coefficients:
+//    T_{kk} = 1/α_CG(k) + β_CG(k-1)/α_CG(k-1)   (k>0)
+//    T_{00} = 1/α_CG(0)
+//    T_{k,k+1} = √β_CG(k) / α_CG(k)
+//  After convergence, diagonalise T and reconstruct Ritz vectors.
+// ---------------------------------------------------------------
+CGResult cg_solve_ritz(
+    const OpApply& A,
+    int n,
+    const Vec& rhs,
+    int max_iter,
+    double tol,
+    int n_ritz,
+    std::vector<RitzPair>& ritz_out,
+    int max_lanczos_vecs
+) {
+    ritz_out.clear();
+    double rhs_norm = norm(rhs);
+    if (rhs_norm < 1e-30) return {zeros(n), 0, 0.0};
+    if (max_lanczos_vecs <= 0) max_lanczos_vecs = max_iter;
+
+    Vec x = zeros(n);
+    Vec r(rhs);
+    Vec p(r);
+    cx rr = dot(r, r);
+    int iter = 0;
+
+    // Store Lanczos vectors (normalised residuals) and CG coefficients
+    std::vector<Vec> lanczos_vecs;
+    std::vector<double> alpha_cg_all, beta_cg_all;
+
+    // First Lanczos vector q_0 = r_0 / ||r_0||
+    {
+        double rn = std::sqrt(rr.real());
+        Vec q = r;
+        scale(q, cx(1.0 / rn));
+        lanczos_vecs.push_back(std::move(q));
+    }
+
+    while (iter < max_iter) {
+        Vec Ap(n);
+        A(p, Ap);
+        cx pAp = dot(p, Ap);
+        double alpha_cg = (rr / pAp).real();
+
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha_cg * p[i];
+            r[i] -= alpha_cg * Ap[i];
+        }
+        iter++;
+
+        double rnorm = norm(r);
+        cx rr_new = dot(r, r);
+        double beta_cg = (rr_new / rr).real();
+        rr = rr_new;
+
+        alpha_cg_all.push_back(alpha_cg);
+        beta_cg_all.push_back(beta_cg);
+
+        // Store Lanczos vector q_k = r_k / ||r_k||
+        if ((int)lanczos_vecs.size() < max_lanczos_vecs && rnorm > 1e-30) {
+            Vec q = r;
+            scale(q, cx(1.0 / rnorm));
+            lanczos_vecs.push_back(std::move(q));
+        }
+
+        if (rnorm / rhs_norm < tol) break;
+
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++)
+            p[i] = r[i] + beta_cg * p[i];
+    }
+
+    // Build Lanczos tridiagonal T from CG coefficients
+    int m = std::min((int)alpha_cg_all.size(), (int)lanczos_vecs.size());
+    if (m >= n_ritz && n_ritz > 0) {
+        // Diagonal: δ_0 = 1/α_0, δ_k = 1/α_k + β_{k-1}/α_{k-1}
+        // Off-diagonal: γ_k = √β_k / α_k
+        std::vector<Vec> T_cols(m, Vec(m, 0.0));
+        T_cols[0][0] = 1.0 / alpha_cg_all[0];
+        for (int k = 1; k < m; k++)
+            T_cols[k][k] = 1.0 / alpha_cg_all[k]
+                         + beta_cg_all[k-1] / alpha_cg_all[k-1];
+        for (int k = 0; k < m - 1; k++) {
+            double gamma = std::sqrt(std::max(beta_cg_all[k], 0.0))
+                         / alpha_cg_all[k];
+            T_cols[k+1][k] = gamma;
+            T_cols[k][k+1] = gamma;
+        }
+
+        // Diagonalise T
+        RVec evals;
+        std::vector<Vec> evecs;
+        lanczos_eigen(T_cols, m, evals, evecs);
+
+        // Reconstruct Ritz vectors: v_p = Σ_k evecs[k][p] * lanczos_vecs[k]
+        int nh = std::min(n_ritz, m);
+        for (int p = 0; p < nh; p++) {
+            RitzPair rp;
+            rp.value = evals[p];
+            rp.vector = zeros(n);
+            for (int k = 0; k < m; k++)
+                axpy(evecs[k][p], lanczos_vecs[k], rp.vector);
+            double nv = norm(rp.vector);
+            if (nv > 1e-14) scale(rp.vector, cx(1.0 / nv));
+            ritz_out.push_back(std::move(rp));
+        }
     }
 
     double final_res = norm(r) / rhs_norm;

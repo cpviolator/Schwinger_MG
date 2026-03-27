@@ -44,8 +44,10 @@ Vec mg_cycle(std::vector<MGLevel>& levels, int lev, const Vec& b,
     int n = levels[lev].dim;
     int last = (int)levels.size() - 1;
 
-    // Base case: coarsest level -- direct solve
+    // Base case: coarsest level -- direct or iterative solve
     if (lev == last) {
+        if (levels[lev].coarse_solve)
+            return levels[lev].coarse_solve(b);
         return levels[lev].Ac.solve(b);
     }
 
@@ -177,6 +179,17 @@ void MGHierarchy::rebuild_deeper_levels() {
 
     // Update coarsest-level Ac (used for direct solve)
     levels[n_levels - 1].Ac = intermediate_Ac.back();
+
+    // If sparse coarse is in use, rebuild it too
+    if (use_sparse_coarse && !geo_prolongators.empty()) {
+        auto& P0 = geo_prolongators[0];
+        int fine_dim = levels[0].dim;
+        sparse_Ac.build(P0, levels[0].op, fine_dim);
+        // Re-run TRLM with warm start from previous deflation vectors
+        int n_defl = (int)sparse_Ac.defl_vecs.size();
+        if (n_defl > 0)
+            sparse_Ac.setup_deflation(n_defl);
+    }
 }
 
 // Prolong a coarsest-level vector all the way to the fine grid
@@ -526,4 +539,49 @@ std::vector<Vec> refresh_from_coarse_eigvecs(
     }
 
     return null_vecs;
+}
+
+// =====================================================================
+//  SPARSE COARSE OPERATOR SETUP
+// =====================================================================
+// Build sparse stencil-based coarse operator from the level-0 geometric
+// prolongator, run TRLM to find deflation eigenvectors, and wire up
+// the coarsest-level solve to use deflated CG.
+void MGHierarchy::setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
+                                       int n_defl, double cg_tol,
+                                       int max_cg_iter) {
+    if (geo_prolongators.empty()) return;
+    auto& P0 = geo_prolongators[0];
+
+    // Build sparse coarse op from the same Galerkin projection
+    sparse_Ac.build(P0, fine_op, fine_dim);
+
+    // Run TRLM to find low modes for deflation
+    std::cout << "  Sparse coarse: dim=" << sparse_Ac.dim
+              << " (nbx=" << sparse_Ac.nbx << " nby=" << sparse_Ac.nby
+              << " k_vec=" << sparse_Ac.k_vec << ")\n";
+    std::cout << "  Running TRLM for " << n_defl << " deflation vectors...\n";
+
+    sparse_Ac.setup_deflation(n_defl);
+
+    std::cout << "  TRLM eigenvalues:";
+    for (int i = 0; i < std::min(n_defl, (int)sparse_Ac.defl_vals.size()); i++)
+        std::cout << " " << sparse_Ac.defl_vals[i];
+    std::cout << "\n";
+
+    // Wire up the coarsest level to use sparse deflated CG
+    int last = (int)levels.size() - 1;
+    if (last < 0) return;
+
+    // Capture by pointer (sparse_Ac lives in MGHierarchy, same lifetime)
+    auto* sac = &sparse_Ac;
+    int miter = max_cg_iter;
+    double ctol = cg_tol;
+    levels[last].coarse_solve = [sac, miter, ctol](const Vec& b) -> Vec {
+        return sac->solve(b, miter, ctol);
+    };
+    use_sparse_coarse = true;
+
+    std::cout << "  Coarsest-level solve: deflated CG (sparse, "
+              << n_defl << " deflation vectors)\n";
 }

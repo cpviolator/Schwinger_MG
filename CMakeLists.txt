@@ -23,6 +23,7 @@ set(SOURCES
     src/smoother.cpp
     src/eigensolver.cpp
     src/solvers.cpp
+    src/coarse_op.cpp
     src/multigrid.cpp
     src/hmc.cpp
     src/main.cpp

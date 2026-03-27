@@ -26,6 +26,9 @@ struct MGLevel {
     // Coarsest-level deflation: eigenvectors and eigenvalues of Ac
     std::vector<Vec> defl_vecs;
     std::vector<double> defl_vals;
+    // Coarse solve function: defaults to dense LU, can be overridden
+    // with sparse deflated CG when SparseCoarseOp is available.
+    std::function<Vec(const Vec&)> coarse_solve;
 };
 
 Vec mg_vcycle(const DiracOp& D, Prolongator& P, CoarseOp& Ac,
@@ -44,6 +47,9 @@ struct MGHierarchy {
     bool w_cycle;
     // Store level-0 null vectors for warm-start rebuilds
     std::vector<Vec> null_vecs_l0;
+    // Sparse coarse operator (optional, for large coarse grids)
+    SparseCoarseOp sparse_Ac;
+    bool use_sparse_coarse = false;
 
     void update_coarsest_deflation(int n_defl, int lobpcg_iters = 3);
     void set_symmetric(double damping = 0.8);
@@ -55,6 +61,16 @@ struct MGHierarchy {
                          int n_refine = 5,
                          std::vector<Vec>* warm_X_coarse = nullptr,
                          std::vector<Vec>* warm_X_fine = nullptr);
+
+    // Setup sparse coarse operator at level 0 with TRLM deflation.
+    // Replaces the coarsest-level dense LU solve with deflated CG
+    // on the sparse stencil operator.
+    //   n_defl: number of deflation eigenvectors (from TRLM)
+    //   cg_tol: CG convergence tolerance for coarse solves
+    //   max_cg_iter: max CG iterations per coarse solve
+    void setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
+                              int n_defl = 16, double cg_tol = 1e-12,
+                              int max_cg_iter = 200);
 };
 
 std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,
