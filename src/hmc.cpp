@@ -52,6 +52,7 @@ bool load_gauge(GaugeField& g, GaugeHeader& hdr, const std::string& filename) {
         fread(g.U[mu].data(), sizeof(cx), g.lat.V, f);
     fclose(f);
 
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int mu = 0; mu < 2; mu++)
         for (int s = 0; s < g.lat.V; s++)
             g.U[mu][s] /= std::abs(g.U[mu][s]);
@@ -68,6 +69,7 @@ void MomentumField::randomise(std::mt19937& rng) {
 
 double MomentumField::kinetic_energy() const {
     double ke = 0.0;
+    #pragma omp parallel for collapse(2) reduction(+:ke) schedule(static)
     for (int mu = 0; mu < 2; mu++)
         for (int s = 0; s < lat.V; s++)
             ke += pi[mu][s] * pi[mu][s];
@@ -76,6 +78,7 @@ double MomentumField::kinetic_energy() const {
 
 double gauge_action(const GaugeField& g, double beta) {
     double s = 0.0;
+    #pragma omp parallel for schedule(static) if(g.lat.V > OMP_MIN_SIZE/4)
     for (int site = 0; site < g.lat.V; site++)
         s += std::real(g.plaq(site));
     return -beta * s;
@@ -87,6 +90,7 @@ void gauge_force(const GaugeField& g, double beta,
     force[0].resize(lat.V);
     force[1].resize(lat.V);
 
+    #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
     for (int s = 0; s < lat.V; s++) {
         {
             int sx = lat.xp(s), sy = lat.yp(s), smy = lat.ym(s);
@@ -140,6 +144,7 @@ void fermion_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
     force[1].assign(lat.V, 0.0);
 
     // Hopping term contribution (standard Wilson)
+    #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
     for (int s = 0; s < lat.V; s++) {
         cx chi_s0 = chi[2*s], chi_s1 = chi[2*s+1];
         cx x_s0 = X[2*s], x_s1 = X[2*s+1];
@@ -211,12 +216,14 @@ void fermion_force_clover(const DiracOp& D, const Vec& chi, const Vec& X,
     {
         // Precompute σ_3 weight at each site: w(x) = Re(χ_0* X_0 - χ_1* X_1)
         RVec w(lat.V);
+        #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
         for (int s = 0; s < lat.V; s++)
             w[s] = std::real(std::conj(chi[2*s]) * X[2*s]
                            - std::conj(chi[2*s+1]) * X[2*s+1]);
 
         double csw = D.c_sw;
 
+        #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
         for (int s = 0; s < lat.V; s++) {
             int sxp = lat.xp(s), sxm = lat.xm(s);
             int syp = lat.yp(s), sym = lat.ym(s);
@@ -493,6 +500,7 @@ void fermion_force_clover(const DiracOp& D, const Vec& chi, const Vec& X,
 void clover_deriv_insert(const DiracOp& D, const RVec& w, double factor,
                          std::array<RVec, 2>& force) {
     const Lattice& lat = D.lat;
+    #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
     for (int s = 0; s < lat.V; s++) {
         int sxp = lat.xp(s), sxm = lat.xm(s);
         int syp = lat.yp(s), sym = lat.ym(s);
@@ -533,6 +541,7 @@ void hopping_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
     const Lattice& lat = D.lat;
     force[0].assign(lat.V, 0.0);
     force[1].assign(lat.V, 0.0);
+    #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
     for (int s = 0; s < lat.V; s++) {
         cx chi_s0 = chi[2*s], chi_s1 = chi[2*s+1];
         cx x_s0 = X[2*s], x_s1 = X[2*s+1];
@@ -577,6 +586,7 @@ void logdet_ee_force(const DiracOp& D,
 
     // Precompute logdet weight at each site (zero for odd sites)
     RVec w(lat.V, 0.0);
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int ie = 0; ie < lat.V_half; ie++) {
         int e = lat.even_sites[ie];
         double C = 0.5 * csw * D.clover_field[e];
@@ -589,6 +599,7 @@ void logdet_ee_force(const DiracOp& D,
     }
 
     // Same plaquette enumeration as fermion_force_clover
+    #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
     for (int s = 0; s < lat.V; s++) {
         int sxp = lat.xp(s), sxm = lat.xm(s);
         int syp = lat.yp(s), sym = lat.ym(s);
@@ -647,6 +658,7 @@ static void eo_clover_force(const DiracOp& D, const EvenOddDiracOp& eoD,
 
     // w_e = D_ee⁻¹ D_eo† y_o = D_ee⁻¹ γ₅ D_oe(γ₅ y_o)
     Vec g5y(n_half);
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int i = 0; i < lat.V_half; i++) {
         g5y[2*i]   =  y_o[2*i];
         g5y[2*i+1] = -y_o[2*i+1];
@@ -654,6 +666,7 @@ static void eo_clover_force(const DiracOp& D, const EvenOddDiracOp& eoD,
     Vec hop_e(n_half);
     eoD.apply_oe(g5y, hop_e);
     Vec g5hop(n_half);
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int i = 0; i < lat.V_half; i++) {
         g5hop[2*i]   =  hop_e[2*i];
         g5hop[2*i+1] = -hop_e[2*i+1];
@@ -668,6 +681,7 @@ static void eo_clover_force(const DiracOp& D, const EvenOddDiracOp& eoD,
     RVec w(lat.V, 0.0);
 
     // Odd-site clover weight (from dD_oo/dA)
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int io = 0; io < lat.V_half; io++) {
         int s = lat.odd_sites[io];
         w[s] = (csw / 4.0) * std::real(
@@ -676,6 +690,7 @@ static void eo_clover_force(const DiracOp& D, const EvenOddDiracOp& eoD,
     }
 
     // Even-site weights (from d(D_ee⁻¹)/dA + logdet)
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int ie = 0; ie < lat.V_half; ie++) {
         int e = lat.even_sites[ie];
         double C = 0.5 * csw * D.clover_field[e];
@@ -697,6 +712,7 @@ static void eo_clover_force(const DiracOp& D, const EvenOddDiracOp& eoD,
 
     // Now compute the force using the same plaquette enumeration as fermion_force_clover
     // but with the combined weight w[] (which has both odd and even contributions)
+    #pragma omp parallel for schedule(static) if(lat.V > OMP_MIN_SIZE/4)
     for (int s = 0; s < lat.V; s++) {
         int sxp = lat.xp(s), sxm = lat.xm(s);
         int syp = lat.yp(s), sym = lat.ym(s);
@@ -758,12 +774,14 @@ void schur_deriv_plus(const DiracOp& D, const EvenOddDiracOp& eoD,
     // tmp3 = A_ee⁻¹ D_oe† chi  (even-site reconstruction of chi via adjoint)
     // D_oe† chi = γ₅ D_eo(γ₅ chi) for γ₅-hermitian D
     Vec g5chi(n_half);
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int i = 0; i < lat.V_half; i++) {
         g5chi[2*i] = chi_o[2*i]; g5chi[2*i+1] = -chi_o[2*i+1];
     }
     Vec hop_e(n_half);
     eoD.apply_oe(g5chi, hop_e);
     Vec g5hop(n_half);
+    #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int i = 0; i < lat.V_half; i++) {
         g5hop[2*i] = hop_e[2*i]; g5hop[2*i+1] = -hop_e[2*i+1];
     }
@@ -774,12 +792,14 @@ void schur_deriv_plus(const DiracOp& D, const EvenOddDiracOp& eoD,
     if (D.c_sw != 0.0) {
         RVec w(lat.V, 0.0);
         // Term 1: +derivOddOddLinOp — weight at odd sites = Re(chi† σ₃ psi)
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int io = 0; io < lat.V_half; io++) {
             int s = lat.odd_sites[io];
             w[s] = std::real(std::conj(chi_o[2*io]) * psi_o[2*io]
                            - std::conj(chi_o[2*io+1]) * psi_o[2*io+1]);
         }
         // Term 3: +derivEvenEvenLinOp — weight at even sites = Re(tmp3† σ₃ tmp2)
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int ie = 0; ie < lat.V_half; ie++) {
             int e = lat.even_sites[ie];
             w[e] = std::real(std::conj(tmp3[2*ie]) * tmp2[2*ie]
@@ -799,6 +819,7 @@ void schur_deriv_plus(const DiracOp& D, const EvenOddDiracOp& eoD,
     hopping_force_bilinear(D, chi_full, psi_full, ff_hop);
     // hopping_force_bilinear gives 2× because it sums fwd+bwd at each link.
     // Terms 2&4 each contribute once, so divide by 2.
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int mu = 0; mu < 2; mu++)
         for (int s = 0; s < lat.V; s++)
             force[mu][s] -= 0.5 * ff_hop[mu][s];
@@ -827,6 +848,7 @@ void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
     // d(x†M†Mx)/dA = 2Re(y†dM/dA x) where y = Mx.
     // schur_deriv_plus gives Re(y†dM/dA x), so multiply by 2.
     schur_deriv_plus(D, eoD, y_o, x_o, force);
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int mu = 0; mu < 2; mu++)
         for (int s = 0; s < lat.V; s++)
             force[mu][s] *= 2.0;
@@ -835,6 +857,7 @@ void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
     if (D.c_sw != 0.0) {
         std::array<RVec, 2> ff_logdet;
         logdet_ee_force(D, ff_logdet);
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 force[mu][s] += ff_logdet[mu][s];
@@ -974,27 +997,32 @@ HMCResult hmc_trajectory(
         std::array<RVec, 2> gf, ff;
         gauge_force(gauge, params.beta, gf);
         auto res0 = solve_and_force(ff);
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
 
         for (int step = 0; step < params.n_steps - 1; step++) {
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
             gauge_force(gauge, params.beta, gf);
             solve_and_force(ff);
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     mom.pi[mu][s] += dt * (gf[mu][s] + ff[mu][s]);
         }
 
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
 
         gauge_force(gauge, params.beta, gf);
         solve_and_force(ff);
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
@@ -1042,6 +1070,7 @@ HMCResult hmc_trajectory(
         total_cg += res.iterations;
         fermion_force(D, res.solution, ff);
 
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
@@ -1049,6 +1078,7 @@ HMCResult hmc_trajectory(
 
     // Full steps
     for (int step = 0; step < params.n_steps - 1; step++) {
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
@@ -1066,12 +1096,14 @@ HMCResult hmc_trajectory(
         total_cg += res.iterations;
         fermion_force(D, res.solution, ff);
 
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += dt * (gf[mu][s] + ff[mu][s]);
     }
 
     // Final gauge update
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int mu = 0; mu < 2; mu++)
         for (int s = 0; s < lat.V; s++)
             gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
@@ -1091,6 +1123,7 @@ HMCResult hmc_trajectory(
         total_cg += res.iterations;
         fermion_force(D, res.solution, ff);
 
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
@@ -1232,6 +1265,7 @@ MultiScaleResult hmc_trajectory_multiscale(
         fermion_force(D, res.solution, ff_full);
         lowmode_fermion_force(D, defl, phi, fl);
 
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += 0.5 * dt_outer * (gf[mu][s] + ff_full[mu][s] - fl[mu][s]);
@@ -1247,6 +1281,7 @@ MultiScaleResult hmc_trajectory_multiscale(
             DiracOp D(lat, gauge, mass, wilson_r, c_sw);
             std::array<RVec, 2> fl;
             lowmode_fermion_force(D, defl, phi, fl);
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     mom.pi[mu][s] += 0.5 * dt_inner * fl[mu][s];
@@ -1257,6 +1292,7 @@ MultiScaleResult hmc_trajectory_multiscale(
         // --- INNER LOOP ---
         for (int i = 0; i < params.n_inner; i++) {
             // Full gauge update
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     gauge.U[mu][s] *= std::exp(cx(0, dt_inner * mom.pi[mu][s]));
@@ -1267,6 +1303,7 @@ MultiScaleResult hmc_trajectory_multiscale(
                 DiracOp D(lat, gauge, mass, wilson_r, c_sw);
                 std::array<RVec, 2> fl;
                 lowmode_fermion_force(D, defl, phi, fl);
+                #pragma omp parallel for collapse(2) schedule(static)
                 for (int mu = 0; mu < 2; mu++)
                     for (int s = 0; s < lat.V; s++)
                         mom.pi[mu][s] += dt_inner * fl[mu][s];
@@ -1281,6 +1318,7 @@ MultiScaleResult hmc_trajectory_multiscale(
             DiracOp D(lat, gauge, mass, wilson_r, c_sw);
             std::array<RVec, 2> fl;
             lowmode_fermion_force(D, defl, phi, fl);
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     mom.pi[mu][s] += 0.5 * dt_inner * fl[mu][s];
@@ -1303,6 +1341,7 @@ MultiScaleResult hmc_trajectory_multiscale(
             lowmode_fermion_force(D, defl, phi, fl);
 
             double kick = (o < params.n_outer - 1) ? dt_outer : 0.5 * dt_outer;
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     mom.pi[mu][s] += kick * (gf[mu][s] + ff_full[mu][s] - fl[mu][s]);
@@ -1481,6 +1520,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         coarse_lowmode_force(D, cdefl, P, phi, fl, params.inner_smooth);
         f_out[0].resize(lat.V);
         f_out[1].resize(lat.V);
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 f_out[mu][s] = gf[mu][s] + ff_full[mu][s] - fl[mu][s];
@@ -1488,12 +1528,14 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     };
 
     auto kick_mom = [&](const std::array<RVec, 2>& f, double dt) {
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += dt * f[mu][s];
     };
 
     auto update_gauge = [&](double dt) {
+        #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
@@ -1604,6 +1646,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
             mom_save.pi[1] = mom.pi[1];
 
             // Zero momentum
+            #pragma omp parallel for collapse(2) schedule(static)
             for (int mu = 0; mu < 2; mu++)
                 for (int s = 0; s < lat.V; s++)
                     mom.pi[mu][s] = 0.0;

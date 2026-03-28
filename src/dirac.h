@@ -311,12 +311,14 @@ struct EvenOddDiracOp {
         int n_half = 2 * lat.V_half;
         // γ₅ = [[1,0],[0,-1]] flips sign of second spinor component
         Vec g5src(n_half);
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             g5src[2*i]   =  src_o[2*i];
             g5src[2*i+1] = -src_o[2*i+1];
         }
         Vec g5dst(n_half);
         apply_schur(g5src, g5dst);
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             dst_o[2*i]   =  g5dst[2*i];
             dst_o[2*i+1] = -g5dst[2*i+1];
@@ -334,11 +336,13 @@ struct EvenOddDiracOp {
     // Scatter half-lattice vectors into a full-lattice vector
     Vec scatter(const Vec& half_e, const Vec& half_o) const {
         Vec full(lat.ndof, 0.0);
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             int se = lat.even_sites[i];
             full[2*se]   = half_e[2*i];
             full[2*se+1] = half_e[2*i+1];
         }
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             int so = lat.odd_sites[i];
             full[2*so]   = half_o[2*i];
@@ -350,6 +354,7 @@ struct EvenOddDiracOp {
     // Gather even/odd components from a full-lattice vector
     Vec gather_even(const Vec& full) const {
         Vec half(2 * lat.V_half);
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             int s = lat.even_sites[i];
             half[2*i]   = full[2*s];
@@ -360,6 +365,7 @@ struct EvenOddDiracOp {
 
     Vec gather_odd(const Vec& full) const {
         Vec half(2 * lat.V_half);
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             int s = lat.odd_sites[i];
             half[2*i]   = full[2*s];
@@ -409,6 +415,7 @@ struct EvenOddDiracOp {
     // For Wilson (c_sw=0): returns 2*V_half*log(2r+m) (constant, can be ignored in ΔH)
     double log_det_ee() const {
         double logdet = 0;
+        #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
         for (int i = 0; i < lat.V_half; i++) {
             int s = lat.even_sites[i];
             double diag = 2.0*D.r + D.mass;
