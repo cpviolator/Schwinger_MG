@@ -124,28 +124,6 @@ HMCResult hmc_trajectory(
     const HMCParams& params, std::mt19937& rng,
     const std::function<Vec(const Vec&)>* precond = nullptr);
 
-// ========================================
-// Even-odd preconditioned HMC
-// ========================================
-// The EO path solves D̂†D̂ x_e = φ_e on even sites, then reconstructs the
-// full solution X = (x_e, x_o) and uses the SAME fermion_force function.
-// The action is S_f = Re(φ_e† x_e) — the Schur complement action.
-// This mirrors QUDA's even-odd preconditioned solve path.
-
-FermionActionResult fermion_action_eo(const DiracOp& D, const Vec& phi_even,
-                                       int max_iter, double tol);
-void generate_pseudofermion_eo(const DiracOp& D, std::mt19937& rng, Vec& phi_even);
-
-// EO fermion force: computes dS_eo/dU where S_eo = φ_e†(D̂†D̂)^{-1}φ_e
-// Takes x_e (even-parity CG solution) and Y_e = D̂ x_e
-void fermion_force_eo(const DiracOp& D, const Vec& x_even, const Vec& Y_even,
-                      std::array<RVec, 2>& force);
-
-void verify_forces_eo(const GaugeField& g, double beta, double mass, double wilson_r,
-                      int max_iter, double tol, double c_sw = 0.0);
-HMCResult hmc_trajectory_eo(GaugeField& gauge, const Lattice& lat, double mass,
-                             double wilson_r, const HMCParams& params, std::mt19937& rng);
-
 // --- Multi-timescale HMC with exact low-mode treatment ---
 
 struct DeflationState {
