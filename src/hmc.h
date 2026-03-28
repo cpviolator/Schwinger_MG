@@ -93,9 +93,10 @@ void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
                       const Vec& x_o, const Vec& y_o,
                       std::array<RVec, 2>& force);
 
-// Force verification
-void verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
-                   int max_iter, double tol, double c_sw = 0.0);
+// Force verification — returns true if relative error < threshold
+bool verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
+                   int max_iter, double tol, double c_sw = 0.0,
+                   bool use_eo = false, double err_threshold = 1e-4);
 
 // Pseudofermion generation
 void generate_pseudofermion(const DiracOp& D, std::mt19937& rng, Vec& phi);

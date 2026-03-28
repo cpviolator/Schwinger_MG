@@ -83,6 +83,7 @@ void print_usage(const char* prog) {
         << "  --hmc-force-gradient  Use nested FGI (MILC PQPQP) outer integrator\n"
         << "  --hmc-defl-refresh <N> Refresh coarse deflation every N inner steps [0=off]\n"
         << "  --hmc-revtest         Run reversibility test (forward+backward)\n"
+        << "  --verify-forces       Numerical derivative force verification\n"
         << "  --hmc-fresh-period <N> Fresh TRLM every N trajectories  [10]\n"
         << "\n"
         << "=== Sparse Coarse Operator Study ===\n"
@@ -152,6 +153,18 @@ void print_usage(const char* prog) {
         << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-revtest --csw 1.0 --mg-levels 2 -b 4 -k 4"
         << " --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8\n"
         << "\n"
+        << "--- Force Verification (Wilson) ---\n"
+        << "  " << prog << " -L 8 --verify-forces --hmc-beta 2.0\n"
+        << "\n"
+        << "--- Force Verification (Clover) ---\n"
+        << "  " << prog << " -L 8 --verify-forces --csw 1.0 --hmc-beta 2.0\n"
+        << "\n"
+        << "--- Force Verification (Wilson E/O) ---\n"
+        << "  " << prog << " -L 8 --verify-forces --even-odd --hmc-beta 2.0\n"
+        << "\n"
+        << "--- Force Verification (Clover E/O) ---\n"
+        << "  " << prog << " -L 8 --verify-forces --even-odd --csw 1.0 --hmc-beta 2.0\n"
+        << "\n"
         << "--- Sparse Coarse Eigenvector Evolution Study ---\n"
         << "  " << prog << " -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4"
         << " --n-defl 8 -n 5 -e 0.02\n";
@@ -191,6 +204,7 @@ int main(int argc, char** argv) {
     bool   hmc_force_gradient = false;
     bool   hmc_omelyan = false;
     bool   hmc_revtest = false;
+    bool   verify_forces_flag = false;
     int    hmc_defl_refresh = 0;
     bool   use_eo = false;
     int    hmc_n_outer = 10;
@@ -249,6 +263,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-force-gradient")) hmc_force_gradient = true;
         else if (match("--hmc-omelyan")) hmc_omelyan = true;
         else if (match("--hmc-revtest")) hmc_revtest = true;
+        else if (match("--verify-forces")) verify_forces_flag = true;
         else if (match("--hmc-defl-refresh")) hmc_defl_refresh = std::atoi(argv[++i]);
         else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
@@ -322,6 +337,18 @@ int main(int argc, char** argv) {
 
     std::cout << "Initial <plaq> = " << std::fixed << std::setprecision(4)
               << gauge.avg_plaq() << "\n\n";
+
+    // -----------------------------------------------------------------
+    //  Force verification mode
+    // -----------------------------------------------------------------
+    if (verify_forces_flag) {
+        std::cout << "=== Force Verification Mode ===\n";
+        std::cout << "c_sw=" << c_sw << "  even-odd=" << (use_eo ? "yes" : "no")
+                  << "  beta=" << hmc_beta << "\n\n";
+        bool pass = verify_forces(gauge, hmc_beta, mass, wilson_r,
+                                  max_iter, tol, c_sw, use_eo);
+        return pass ? 0 : 1;
+    }
 
     // -----------------------------------------------------------------
     //  HMC mode

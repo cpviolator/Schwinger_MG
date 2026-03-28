@@ -864,31 +864,75 @@ void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
     }
 }
 
-void verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
-                   int max_iter, double tol, double c_sw) {
+bool verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
+                   int max_iter, double tol, double c_sw, bool use_eo,
+                   double err_threshold) {
     const Lattice& lat = g.lat;
     double eps = 1e-5;
     std::mt19937 rng(12345);
+    int n_tests = 20;  // test 20 links for thorough coverage
+
+    std::string label = use_eo ? "E/O" : "Full";
+    std::cout << "\n=== Force Verification (" << label
+              << ", c_sw=" << c_sw << ") ===\n";
 
     DiracOp D0(lat, g, mass, wilson_r, c_sw);
-    Vec phi(lat.ndof);
-    Vec eta = random_vec(lat.ndof, rng);
-    D0.apply_dag(eta, phi);
 
+    // --- Gauge force (same for both full and e/o) ---
     std::array<RVec, 2> gf_ana;
     gauge_force(g, beta, gf_ana);
 
-    OpApply A0 = [&D0](const Vec& src, Vec& dst) { D0.apply_DdagD(src, dst); };
-    auto res0 = cg_solve(A0, lat.ndof, phi, max_iter, tol);
+    // --- Fermion force: standard D†D or Schur complement ---
+    Vec phi;                    // pseudofermion
+    Vec phi_o;                  // odd-site pseudofermion (e/o only)
     std::array<RVec, 2> ff_ana;
-    fermion_force(D0, res0.solution, ff_ana);
+
+    if (!use_eo) {
+        // Standard: S_F = φ†(D†D)⁻¹φ
+        Vec eta = random_vec(lat.ndof, rng);
+        phi.resize(lat.ndof);
+        D0.apply_dag(eta, phi);
+        OpApply A0 = [&D0](const Vec& src, Vec& dst) { D0.apply_DdagD(src, dst); };
+        auto res0 = cg_solve(A0, lat.ndof, phi, max_iter, tol);
+        fermion_force(D0, res0.solution, ff_ana);
+    } else {
+        // E/O: S_eo = φ_o†(M†M)⁻¹φ_o - 2 log det(D_ee)
+        EvenOddDiracOp eoD0(D0);
+        int n_half = 2 * lat.V_half;
+        Vec eta = random_vec(n_half, rng);
+        phi_o.resize(n_half);
+        eoD0.apply_schur_dag(eta, phi_o);
+        OpApply A0 = [&eoD0](const Vec& src, Vec& dst) { eoD0.apply_schur_dag_schur(src, dst); };
+        auto res0 = cg_solve(A0, n_half, phi_o, max_iter, tol);
+        Vec y_o(n_half);
+        eoD0.apply_schur(res0.solution, y_o);
+        eo_fermion_force(D0, eoD0, res0.solution, y_o, ff_ana);
+    }
 
     double max_gf_err = 0, max_ff_err = 0;
     double max_gf_val = 0, max_ff_val = 0;
 
-    for (int test = 0; test < 10; test++) {
+    // Lambda to compute the action for a given gauge field
+    auto compute_fermion_action = [&](const GaugeField& gf) -> double {
+        DiracOp Dp(lat, gf, mass, wilson_r, c_sw);
+        if (!use_eo) {
+            OpApply Ap = [&Dp](const Vec& s, Vec& d) { Dp.apply_DdagD(s, d); };
+            auto r = cg_solve(Ap, lat.ndof, phi, max_iter, tol);
+            return std::real(dot(phi, r.solution));
+        } else {
+            EvenOddDiracOp eoDp(Dp);
+            int n_half = 2 * lat.V_half;
+            OpApply Ap = [&eoDp](const Vec& s, Vec& d) { eoDp.apply_schur_dag_schur(s, d); };
+            auto r = cg_solve(Ap, n_half, phi_o, max_iter, tol);
+            double S = std::real(dot(phi_o, r.solution));
+            if (c_sw != 0.0) S -= 2.0 * eoDp.log_det_ee();
+            return S;
+        }
+    };
+
+    for (int test = 0; test < n_tests; test++) {
         int mu = test % 2;
-        int s = test * 7 % lat.V;
+        int s = (test * 7 + test / 2 * 13) % lat.V;
 
         GaugeField g_plus(lat);
         g_plus.U[0] = g.U[0]; g_plus.U[1] = g.U[1];
@@ -898,38 +942,40 @@ void verify_forces(const GaugeField& g, double beta, double mass, double wilson_
         g_minus.U[0] = g.U[0]; g_minus.U[1] = g.U[1];
         g_minus.U[mu][s] *= std::exp(cx(0, -eps));
 
+        // Gauge force check
         double sg_plus = gauge_action(g_plus, beta);
         double sg_minus = gauge_action(g_minus, beta);
         double gf_num = -(sg_plus - sg_minus) / (2 * eps);
-
         double gf_err = std::abs(gf_ana[mu][s] - gf_num);
         max_gf_err = std::max(max_gf_err, gf_err);
         max_gf_val = std::max(max_gf_val, std::abs(gf_ana[mu][s]));
 
-        DiracOp D_plus(lat, g_plus, mass, wilson_r, c_sw);
-        DiracOp D_minus(lat, g_minus, mass, wilson_r, c_sw);
-        OpApply Ap = [&D_plus](const Vec& src, Vec& dst) { D_plus.apply_DdagD(src, dst); };
-        OpApply Am = [&D_minus](const Vec& src, Vec& dst) { D_minus.apply_DdagD(src, dst); };
-        auto rp = cg_solve(Ap, lat.ndof, phi, max_iter, tol);
-        auto rm = cg_solve(Am, lat.ndof, phi, max_iter, tol);
-        double sf_plus = std::real(dot(phi, rp.solution));
-        double sf_minus = std::real(dot(phi, rm.solution));
+        // Fermion force check
+        double sf_plus = compute_fermion_action(g_plus);
+        double sf_minus = compute_fermion_action(g_minus);
         double ff_num = -(sf_plus - sf_minus) / (2 * eps);
-
         double ff_err = std::abs(ff_ana[mu][s] - ff_num);
         max_ff_err = std::max(max_ff_err, ff_err);
         max_ff_val = std::max(max_ff_val, std::abs(ff_ana[mu][s]));
 
-        std::cout << "  link(" << mu << "," << s << "): "
-                  << "gf_ana=" << std::setw(10) << gf_ana[mu][s]
-                  << " gf_num=" << std::setw(10) << gf_num
-                  << " | ff_ana=" << std::setw(10) << ff_ana[mu][s]
-                  << " ff_num=" << std::setw(10) << ff_num << "\n";
+        std::cout << "  link(" << mu << "," << std::setw(3) << s << "): "
+                  << "gf_ana=" << std::setw(12) << gf_ana[mu][s]
+                  << " gf_num=" << std::setw(12) << gf_num
+                  << " | ff_ana=" << std::setw(12) << ff_ana[mu][s]
+                  << " ff_num=" << std::setw(12) << ff_num << "\n";
     }
-    std::cout << "Gauge force: max_err=" << max_gf_err
-              << " rel=" << max_gf_err / std::max(max_gf_val, 1e-30) << "\n";
-    std::cout << "Fermion force: max_err=" << max_ff_err
-              << " rel=" << max_ff_err / std::max(max_ff_val, 1e-30) << "\n";
+
+    double gf_rel = max_gf_err / std::max(max_gf_val, 1e-30);
+    double ff_rel = max_ff_err / std::max(max_ff_val, 1e-30);
+    bool gf_pass = gf_rel < err_threshold;
+    bool ff_pass = ff_rel < err_threshold;
+
+    std::cout << "Gauge force:   max_err=" << std::scientific << max_gf_err
+              << " rel=" << gf_rel << (gf_pass ? " PASS" : " FAIL") << "\n";
+    std::cout << "Fermion force: max_err=" << std::scientific << max_ff_err
+              << " rel=" << ff_rel << (ff_pass ? " PASS" : " FAIL") << "\n";
+
+    return gf_pass && ff_pass;
 }
 
 void generate_pseudofermion(const DiracOp& D, std::mt19937& rng, Vec& phi) {

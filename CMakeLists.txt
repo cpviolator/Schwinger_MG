@@ -107,6 +107,16 @@ add_test(NAME revtest_clover
     COMMAND schwinger -L 16 --hmc-mg-multiscale --hmc-revtest --csw 1.0 --mg-levels 2 -b 4 -k 4
         --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8 -t 1)
 
+# --- Force Verification (numerical derivative checks) ---
+add_test(NAME force_wilson
+    COMMAND schwinger -L 8 --verify-forces --hmc-beta 2.0 -t 1)
+add_test(NAME force_clover
+    COMMAND schwinger -L 8 --verify-forces --csw 1.0 --hmc-beta 2.0 -t 1)
+add_test(NAME force_wilson_eo
+    COMMAND schwinger -L 8 --verify-forces --even-odd --hmc-beta 2.0 -t 1)
+add_test(NAME force_clover_eo
+    COMMAND schwinger -L 8 --verify-forces --even-odd --csw 1.0 --hmc-beta 2.0 -t 1)
+
 # --- Sparse Coarse Eigenvector Evolution ---
 add_test(NAME sparse_coarse_evolution
     COMMAND schwinger -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4
@@ -120,6 +130,7 @@ set_tests_properties(
     mg_multiscale_fgi mg_fgi_clover mg_fgi_defl_refresh
     mg_multiscale_eo mg_fgi_eo
     revtest_wilson revtest_clover
+    force_wilson force_clover force_wilson_eo force_clover_eo
     sparse_coarse_evolution
     PROPERTIES TIMEOUT 300
 )
