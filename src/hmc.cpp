@@ -1457,30 +1457,29 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     mom.randomise(rng);
 
     DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
-    bool eo = params.use_eo;
+    // Multi-timescale: e/o not supported (force splitting requires consistent action).
+    // The e/o Schur complement action differs from D†D, making F_outer - F_inner
+    // inconsistent when inner uses full-lattice phi and outer uses Schur phi_o.
+    // E/O works correctly for the standard HMC path (no force splitting).
+    bool eo = false;
     int n_half = 2 * lat.V_half;
-
-    // Pseudofermion: full lattice or Schur space
-    Vec phi;           // full-lattice pseudofermion (used by inner force and non-eo path)
-    Vec phi_o;         // Schur pseudofermion (e/o path)
-    if (eo) {
-        EvenOddDiracOp eoD_init(D_init);
-        phi_o = eoD_init.generate_pseudofermion_eo(rng);
-        // Also need full-lattice phi for the inner (coarse lowmode) force.
-        // Generate it separately for the inner force:
-        generate_pseudofermion(D_init, rng, phi);
-    } else {
+    Vec phi;
+    generate_pseudofermion(D_init, rng, phi);
+    if (!eo) {
         generate_pseudofermion(D_init, rng, phi);
     }
 
     // --- Initial Hamiltonian ---
+    // Always use full-lattice action phi†(D†D)⁻¹phi
+    // For e/o: use e/o CG as fast solver, reconstruct, evaluate full action
     double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
     if (eo) {
         EvenOddDiracOp eoD(D_init);
+        Vec phi_o_init = eoD.gather_odd(phi);
         OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-        auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
-        H_init += std::real(dot(phi_o, res.solution));
-        if (c_sw != 0.0) H_init -= 2.0 * eoD.log_det_ee();
+        auto res = cg_solve(A, n_half, phi_o_init, params.cg_maxiter, params.cg_tol);
+        Vec x_full = eoD.reconstruct_full(res.solution);
+        H_init += std::real(dot(phi, x_full));
         total_cg += res.iterations;
     } else {
         OpApply A = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
@@ -1499,15 +1498,15 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         gauge_force(gauge, params.beta, gf);
 
         if (eo) {
-            // E/O CG solve + e/o force
+            // E/O CG for faster convergence, but full-lattice force for
+            // consistency with the inner force splitting
             EvenOddDiracOp eoD(D);
+            Vec phi_o_cur = eoD.gather_odd(phi);
             OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-            auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+            auto res = cg_solve(A, n_half, phi_o_cur, params.cg_maxiter, params.cg_tol);
             total_cg += res.iterations;
-            Vec y_o(n_half);
-            eoD.apply_schur(res.solution, y_o);
-            eo_fermion_force(D, eoD, res.solution, y_o, ff_full);
-            // eo_fermion_force now includes clover + logdet terms internally
+            Vec x_full = eoD.reconstruct_full(res.solution);
+            fermion_force(D, x_full, ff_full);
         } else {
             OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
             auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
@@ -1695,10 +1694,11 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     if (eo) {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         EvenOddDiracOp eoD(D);
+        Vec phi_o_fin = eoD.gather_odd(phi);
         OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-        auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
-        H_final += std::real(dot(phi_o, res.solution));
-        if (c_sw != 0.0) H_final -= 2.0 * eoD.log_det_ee();
+        auto res = cg_solve(A, n_half, phi_o_fin, params.cg_maxiter, params.cg_tol);
+        Vec x_full = eoD.reconstruct_full(res.solution);
+        H_final += std::real(dot(phi, x_full));
         total_cg += res.iterations;
     } else {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);

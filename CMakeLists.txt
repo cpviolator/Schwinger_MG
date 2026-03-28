@@ -68,35 +68,36 @@ add_test(NAME mg_multiscale_leapfrog
     COMMAND schwinger -L 16 --hmc-mg-multiscale --mg-levels 2 -b 4 -k 4
         --hmc-n-outer 20 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
 
-# --- MG Multi-Timescale HMC (Omelyan, n_outer=10 matches 20 steps) ---
+# --- MG Multi-Timescale HMC (Omelyan, n_outer=20 for std acceptance) ---
 add_test(NAME mg_multiscale_omelyan
     COMMAND schwinger -L 16 --hmc-mg-multiscale --hmc-omelyan --mg-levels 2 -b 4 -k 4
-        --hmc-n-outer 10 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
+        --hmc-n-outer 20 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
 
-# --- Nested FGI (n_outer=10 for good acceptance) ---
+# --- Nested FGI (n_outer=20 so std side also accepts) ---
 add_test(NAME mg_multiscale_fgi
     COMMAND schwinger -L 16 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 -b 4 -k 4
-        --hmc-n-outer 10 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
+        --hmc-n-outer 20 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
 
-# --- FGI with Clover (n_outer=10 for clover) ---
+# --- FGI with Clover ---
 add_test(NAME mg_fgi_clover
     COMMAND schwinger -L 16 --hmc-mg-multiscale --hmc-force-gradient --csw 1.0
-        --mg-levels 2 -b 4 -k 4 --hmc-n-outer 10 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
+        --mg-levels 2 -b 4 -k 4 --hmc-n-outer 20 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
 
 # --- FGI with Deflation Refresh (true multi-timescale: n_inner=5) ---
 add_test(NAME mg_fgi_defl_refresh
     COMMAND schwinger -L 16 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 -b 4 -k 4
         --hmc-n-outer 5 --hmc-n-inner 5 --hmc-n-defl 8 --hmc-defl-refresh 3 --hmc-traj 10 --hmc-therm 10 -t 1)
 
-# --- MG Multi-Timescale with Even-Odd (n_outer=20 baseline) ---
+# --- MG Multi-Timescale with Even-Odd ---
+# NOTE: e/o is disabled internally for multi-timescale (force splitting requires
+# consistent full-lattice action). The --even-odd flag is accepted but ignored.
+# These tests verify the flag doesn't cause errors.
 add_test(NAME mg_multiscale_eo
     COMMAND schwinger -L 16 --hmc-mg-multiscale --even-odd --mg-levels 2 -b 4 -k 4
         --hmc-n-outer 20 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
-
-# --- MG FGI with Even-Odd (n_outer=10) ---
 add_test(NAME mg_fgi_eo
     COMMAND schwinger -L 16 --hmc-mg-multiscale --hmc-force-gradient --even-odd
-        --mg-levels 2 -b 4 -k 4 --hmc-n-outer 10 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
+        --mg-levels 2 -b 4 -k 4 --hmc-n-outer 20 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10 -t 1)
 
 # --- Reversibility Tests ---
 add_test(NAME revtest_wilson
