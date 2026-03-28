@@ -117,6 +117,26 @@ add_test(NAME force_wilson_eo
 add_test(NAME force_clover_eo
     COMMAND schwinger -L 8 --verify-forces --even-odd --csw 1.0 --hmc-beta 2.0 -t 1)
 
+# --- Force Verification (twisted mass / twisted clover) ---
+add_test(NAME force_tm
+    COMMAND schwinger -L 8 --verify-forces --mu-t 0.1 --hmc-beta 2.0 -t 1)
+add_test(NAME force_tm_eo
+    COMMAND schwinger -L 8 --verify-forces --mu-t 0.1 --even-odd --hmc-beta 2.0 -t 1)
+add_test(NAME force_tc
+    COMMAND schwinger -L 8 --verify-forces --mu-t 0.1 --csw 1.0 --hmc-beta 2.0 -t 1)
+add_test(NAME force_tc_eo
+    COMMAND schwinger -L 8 --verify-forces --mu-t 0.1 --csw 1.0 --even-odd --hmc-beta 2.0 -t 1)
+
+# --- Twisted Mass / Twisted Clover HMC ---
+add_test(NAME hmc_tm
+    COMMAND schwinger --hmc --mu-t 0.1 -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10 -t 1)
+add_test(NAME hmc_tm_eo
+    COMMAND schwinger --hmc --mu-t 0.1 --even-odd -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10 -t 1)
+add_test(NAME hmc_tc
+    COMMAND schwinger --hmc --mu-t 0.1 --csw 1.0 -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10 -t 1)
+add_test(NAME hmc_tc_eo
+    COMMAND schwinger --hmc --mu-t 0.1 --csw 1.0 --even-odd -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10 -t 1)
+
 # --- Sparse Coarse Eigenvector Evolution ---
 add_test(NAME sparse_coarse_evolution
     COMMAND schwinger -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4
@@ -131,6 +151,8 @@ set_tests_properties(
     mg_multiscale_eo mg_fgi_eo
     revtest_wilson revtest_clover
     force_wilson force_clover force_wilson_eo force_clover_eo
+    force_tm force_tm_eo force_tc force_tc_eo
+    hmc_tm hmc_tm_eo hmc_tc hmc_tc_eo
     sparse_coarse_evolution
     PROPERTIES TIMEOUT 300
 )

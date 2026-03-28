@@ -583,19 +583,19 @@ void logdet_ee_force(const DiracOp& D,
 
     double csw = D.c_sw;
     double diag = 2.0 * D.r + D.mass;
+    double mu2 = D.mu_t * D.mu_t;
 
     // Precompute logdet weight at each site (zero for odd sites)
+    // d(Re log det)/dC_e = d0/(d0²+μ²) - d1/(d1²+μ²)
+    // where d0 = diag+C, d1 = diag-C
+    // When μ=0: reduces to 1/(diag+C) - 1/(diag-C) = -2C/((diag+C)(diag-C))
     RVec w(lat.V, 0.0);
     #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int ie = 0; ie < lat.V_half; ie++) {
         int e = lat.even_sites[ie];
         double C = 0.5 * csw * D.clover_field[e];
-        // w(e) = -c_sw × C / ((2r+m+C)(2r+m-C))
-        // Factor of 2 for the overall 2× in the force, and ×(c_sw/8) from
-        // the plaquette derivative structure (same as fermion_force_clover).
-        // The fermion_force_clover uses (csw/4) × w, so logdet uses (1/2) × w_logdet.
-        // We precompute the full weight and use the (1/2) factor below.
-        w[e] = -csw * C / ((diag + C) * (diag - C));
+        double d0 = diag + C, d1 = diag - C;
+        w[e] = 0.5 * csw * (d0/(d0*d0 + mu2) - d1/(d1*d1 + mu2));
     }
 
     // Same plaquette enumeration as fermion_force_clover
@@ -771,8 +771,9 @@ void schur_deriv_plus(const DiracOp& D, const EvenOddDiracOp& eoD,
     eoD.apply_oe(psi_o, tmp1_e);
     eoD.apply_ee_inv(tmp1_e, tmp2);
 
-    // tmp3 = A_ee⁻¹ D_oe† chi  (even-site reconstruction of chi via adjoint)
-    // D_oe† chi = γ₅ D_eo(γ₅ chi) for γ₅-hermitian D
+    // tmp3 = (A_ee†)⁻¹ D_oe† chi  (even-site reconstruction of chi via adjoint)
+    // D_oe† chi = γ₅ D_eo(γ₅ chi) (hopping is γ₅-Hermitian regardless of twist)
+    // (A_ee†)⁻¹ = A_ee(-μ)⁻¹ (adjoint inverse negates the twist)
     Vec g5chi(n_half);
     #pragma omp parallel for schedule(static) if(lat.V_half > OMP_MIN_SIZE/8)
     for (int i = 0; i < lat.V_half; i++) {
@@ -786,7 +787,7 @@ void schur_deriv_plus(const DiracOp& D, const EvenOddDiracOp& eoD,
         g5hop[2*i] = hop_e[2*i]; g5hop[2*i+1] = -hop_e[2*i+1];
     }
     Vec tmp3(n_half);
-    eoD.apply_ee_inv(g5hop, tmp3);
+    eoD.apply_diag_inv_impl(g5hop, tmp3, lat.even_sites, -D.mu_t);
 
     // Terms 1 & 3: clover diagonal derivatives (only for c_sw != 0)
     if (D.c_sw != 0.0) {
@@ -866,7 +867,7 @@ void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
 
 bool verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
                    int max_iter, double tol, double c_sw, bool use_eo,
-                   double err_threshold) {
+                   double err_threshold, double mu_t) {
     const Lattice& lat = g.lat;
     double eps = 1e-5;
     std::mt19937 rng(12345);
@@ -874,9 +875,9 @@ bool verify_forces(const GaugeField& g, double beta, double mass, double wilson_
 
     std::string label = use_eo ? "E/O" : "Full";
     std::cout << "\n=== Force Verification (" << label
-              << ", c_sw=" << c_sw << ") ===\n";
+              << ", c_sw=" << c_sw << ", mu_t=" << mu_t << ") ===\n";
 
-    DiracOp D0(lat, g, mass, wilson_r, c_sw);
+    DiracOp D0(lat, g, mass, wilson_r, c_sw, mu_t);
 
     // --- Gauge force (same for both full and e/o) ---
     std::array<RVec, 2> gf_ana;
@@ -914,7 +915,7 @@ bool verify_forces(const GaugeField& g, double beta, double mass, double wilson_
 
     // Lambda to compute the action for a given gauge field
     auto compute_fermion_action = [&](const GaugeField& gf) -> double {
-        DiracOp Dp(lat, gf, mass, wilson_r, c_sw);
+        DiracOp Dp(lat, gf, mass, wilson_r, c_sw, mu_t);
         if (!use_eo) {
             OpApply Ap = [&Dp](const Vec& s, Vec& d) { Dp.apply_DdagD(s, d); };
             auto r = cg_solve(Ap, lat.ndof, phi, max_iter, tol);
@@ -991,6 +992,7 @@ HMCResult hmc_trajectory(
 {
     double dt = params.tau / params.n_steps;
     double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
     int total_cg = 0;
 
     GaugeField gauge_old(lat);
@@ -1007,13 +1009,13 @@ HMCResult hmc_trajectory(
         int n_half = 2 * lat.V_half;
 
         // Generate pseudofermion in Schur space
-        DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
         EvenOddDiracOp eoD_init(D_init);
         Vec phi_o = eoD_init.generate_pseudofermion_eo(rng);
 
         // Solve + force helper
         auto solve_and_force = [&](std::array<RVec, 2>& ff) {
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             EvenOddDiracOp eoD(D);
             OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
             auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
@@ -1030,7 +1032,7 @@ HMCResult hmc_trajectory(
             HComponents h;
             h.KE = mom.kinetic_energy();
             h.SG = gauge_action(gauge, params.beta);
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             EvenOddDiracOp eoD(D);
             OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
             auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
@@ -1091,7 +1093,7 @@ HMCResult hmc_trajectory(
     }
 
     // === Full-lattice path (original) ===
-    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
     Vec phi;
     generate_pseudofermion(D_init, rng, phi);
 
@@ -1112,7 +1114,7 @@ HMCResult hmc_trajectory(
 
     // Half-step momenta
     {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff;
         gauge_force(gauge, params.beta, gf);
 
@@ -1138,7 +1140,7 @@ HMCResult hmc_trajectory(
             for (int s = 0; s < lat.V; s++)
                 gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
 
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff;
         gauge_force(gauge, params.beta, gf);
 
@@ -1165,7 +1167,7 @@ HMCResult hmc_trajectory(
 
     // Half-step momenta (final)
     {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff;
         gauge_force(gauge, params.beta, gf);
 
@@ -1189,7 +1191,7 @@ HMCResult hmc_trajectory(
     double SG_final = gauge_action(gauge, params.beta);
     double SF_final;
     {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
         CGResult res;
         if (precond)
@@ -1276,6 +1278,7 @@ MultiScaleResult hmc_trajectory_multiscale(
     double dt_outer = params.tau / params.n_outer;
     double dt_inner = dt_outer / params.n_inner;
     double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
     int total_cg = 0;
     int lowmode_evals = 0;
     double highmode_time = 0, lowmode_time = 0;
@@ -1289,7 +1292,7 @@ MultiScaleResult hmc_trajectory_multiscale(
     MomentumField mom(lat);
     mom.randomise(rng);
 
-    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
     Vec phi;
     generate_pseudofermion(D_init, rng, phi);
 
@@ -1316,7 +1319,7 @@ MultiScaleResult hmc_trajectory_multiscale(
     // High-mode = full fermion force - low-mode force
     {
         auto t0 = Clock::now();
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff_full, fl;
         gauge_force(gauge, params.beta, gf);
 
@@ -1340,7 +1343,7 @@ MultiScaleResult hmc_trajectory_multiscale(
         // --- INNER HALF-KICK (fast: low-mode force) ---
         {
             auto t0 = Clock::now();
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             std::array<RVec, 2> fl;
             lowmode_fermion_force(D, defl, phi, fl);
             #pragma omp parallel for collapse(2) schedule(static)
@@ -1362,7 +1365,7 @@ MultiScaleResult hmc_trajectory_multiscale(
             if (i < params.n_inner - 1) {
                 // Full inner kick
                 auto t0 = Clock::now();
-                DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+                DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
                 std::array<RVec, 2> fl;
                 lowmode_fermion_force(D, defl, phi, fl);
                 #pragma omp parallel for collapse(2) schedule(static)
@@ -1377,7 +1380,7 @@ MultiScaleResult hmc_trajectory_multiscale(
         // --- FINAL INNER HALF-KICK ---
         {
             auto t0 = Clock::now();
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             std::array<RVec, 2> fl;
             lowmode_fermion_force(D, defl, phi, fl);
             #pragma omp parallel for collapse(2) schedule(static)
@@ -1391,7 +1394,7 @@ MultiScaleResult hmc_trajectory_multiscale(
         // --- OUTER KICK (slow: gauge + high-mode = full - low) ---
         {
             auto t0 = Clock::now();
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             std::array<RVec, 2> gf, ff_full, fl;
             gauge_force(gauge, params.beta, gf);
 
@@ -1416,7 +1419,7 @@ MultiScaleResult hmc_trajectory_multiscale(
     double SG_final = gauge_action(gauge, params.beta);
     double SF_final;
     {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
         CGResult res;
         if (precond)
@@ -1510,6 +1513,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
     double dt_outer = params.tau / params.n_outer;
     double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
     int total_cg = 0;
     int lowmode_evals = 0;
     double highmode_time = 0, lowmode_time = 0;
@@ -1522,7 +1526,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     MomentumField mom(lat);
     mom.randomise(rng);
 
-    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
     // Multi-timescale: e/o not supported (force splitting requires consistent action).
     // The e/o Schur complement action differs from D†D, making F_outer - F_inner
     // inconsistent when inner uses full-lattice phi and outer uses Schur phi_o.
@@ -1560,7 +1564,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
     auto compute_outer_force = [&](std::array<RVec, 2>& f_out) {
         auto t0 = Clock::now();
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff_full, fl;
         gauge_force(gauge, params.beta, gf);
 
@@ -1609,7 +1613,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
     auto compute_inner_force = [&](std::array<RVec, 2>& fl) {
         auto t0 = Clock::now();
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         coarse_lowmode_force(D, cdefl, P, phi, fl, params.inner_smooth);
         lowmode_evals++;
         lowmode_time += Dur(Clock::now() - t0).count();
@@ -1622,7 +1626,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         if (params.defl_refresh > 0 && inner_step_counter > 0
             && inner_step_counter % params.defl_refresh == 0) {
             // Rebuild coarse operator for current gauge and RR-evolve eigenvectors
-            DiracOp D_ref(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D_ref(lat, gauge, mass, wilson_r, c_sw, mu_t);
             OpApply A_ref = [&D_ref](const Vec& s, Vec& d) { D_ref.apply_DdagD(s, d); };
             // Rebuild sparse coarse op stencil from current gauge
             SparseCoarseOp sac_tmp;
@@ -1761,7 +1765,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     double SG_final = gauge_action(gauge, params.beta);
     double SF_final;
     if (eo) {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         EvenOddDiracOp eoD(D);
         Vec phi_o_fin = eoD.gather_odd(phi);
         OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
@@ -1770,7 +1774,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         SF_final = std::real(dot(phi, x_full));
         total_cg += res.iterations;
     } else {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
         auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
                                      params.cg_maxiter, params.cg_tol);
@@ -1803,6 +1807,7 @@ static int mg_ms_md_evolve(
 {
     double h = params.tau / params.n_outer;
     double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
     int total_cg = 0;
     auto oforce = [&](std::array<RVec,2>& f) {
         DiracOp D(lat,gauge,mass,wilson_r,c_sw);
@@ -1857,6 +1862,7 @@ ReversibilityResult reversibility_test_mg_multiscale(
     Prolongator& P, std::function<Vec(const Vec&)>& mg_precond, std::mt19937& rng)
 {
     double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
     int total_cg=0;
     GaugeField gi(lat); gi.U[0]=gauge.U[0]; gi.U[1]=gauge.U[1];
     MomentumField mom(lat); mom.randomise(rng);

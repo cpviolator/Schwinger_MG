@@ -96,7 +96,8 @@ void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
 // Force verification — returns true if relative error < threshold
 bool verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
                    int max_iter, double tol, double c_sw = 0.0,
-                   bool use_eo = false, double err_threshold = 1e-4);
+                   bool use_eo = false, double err_threshold = 1e-4,
+                   double mu_t = 0.0);
 
 // Pseudofermion generation
 void generate_pseudofermion(const DiracOp& D, std::mt19937& rng, Vec& phi);
@@ -110,6 +111,7 @@ struct HMCParams {
     double cg_tol;
     bool use_mg;
     double c_sw = 0.0;
+    double mu_t = 0.0;   // twisted mass parameter
     bool use_eo = false;  // even-odd preconditioning
 };
 
@@ -166,6 +168,7 @@ struct MultiScaleParams {
     int cg_maxiter = 500;
     double cg_tol = 1e-10;
     double c_sw = 0.0;
+    double mu_t = 0.0;
     bool use_eo = false;
 };
 
@@ -234,6 +237,7 @@ struct MGMultiScaleParams {
     OuterIntegrator outer_type = OuterIntegrator::Leapfrog;
     int defl_refresh = 0;   // refresh coarse deflation every N inner steps (0=never)
     double c_sw = 0.0;     // clover coefficient
+    double mu_t = 0.0;    // twisted mass parameter
     bool use_eo = false;   // even-odd preconditioning
 };
 

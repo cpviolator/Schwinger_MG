@@ -35,6 +35,7 @@ void print_usage(const char* prog) {
         << "  -m <float>            Fermion mass                      [0.05]\n"
         << "  -r <float>            Wilson parameter                  [1.0]\n"
         << "  --csw <float>         Clover coefficient (0=Wilson)     [0.0]\n"
+        << "  --mu-t <float>        Twisted mass parameter (0=untwisted) [0.0]\n"
         << "  -w <float>            Hot-start width (initial gauge)   [0.4]\n"
         << "  -s <int>              RNG seed                          [42]\n"
         << "  -t <int>              OpenMP threads                    [all cores]\n"
@@ -183,6 +184,7 @@ int main(int argc, char** argv) {
     double hot_width = 0.4;
     double wilson_r  = 1.0;
     double c_sw      = 0.0;  // clover coefficient (0 = pure Wilson)
+    double mu_t      = 0.0;  // twisted mass parameter (0 = untwisted)
     double tol       = 1e-10;
     int    krylov    = 30;
     int    max_iter  = 300;
@@ -237,6 +239,7 @@ int main(int argc, char** argv) {
         else if (match("-w"))        hot_width = next_dbl();
         else if (match("-r"))        wilson_r  = next_dbl();
         else if (match("--csw"))     c_sw      = next_dbl();
+        else if (match("--mu-t"))    mu_t      = next_dbl();
         else if (match("--tol"))     tol       = next_dbl();
         else if (match("--krylov"))  krylov    = next_int();
         else if (match("-t"))        n_threads = next_int();
@@ -343,10 +346,11 @@ int main(int argc, char** argv) {
     // -----------------------------------------------------------------
     if (verify_forces_flag) {
         std::cout << "=== Force Verification Mode ===\n";
-        std::cout << "c_sw=" << c_sw << "  even-odd=" << (use_eo ? "yes" : "no")
+        std::cout << "c_sw=" << c_sw << "  mu_t=" << mu_t
+                  << "  even-odd=" << (use_eo ? "yes" : "no")
                   << "  beta=" << hmc_beta << "\n\n";
         bool pass = verify_forces(gauge, hmc_beta, mass, wilson_r,
-                                  max_iter, tol, c_sw, use_eo);
+                                  max_iter, tol, c_sw, use_eo, 1e-4, mu_t);
         return pass ? 0 : 1;
     }
 
@@ -372,6 +376,7 @@ int main(int argc, char** argv) {
         params.cg_tol = tol;
         params.use_mg = false;
         params.c_sw = c_sw;
+        params.mu_t = mu_t;
         params.use_eo = use_eo;
 
         int n_accept = 0;
@@ -462,7 +467,7 @@ int main(int argc, char** argv) {
 
         // --- Compute initial eigenvectors ---
         std::cout << "--- Computing " << hmc_n_defl << " eigenvectors of D†D ---\n";
-        DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A_init = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
         auto trlm = trlm_eigensolver(A_init, lat.ndof, hmc_n_defl,
                                       std::min(2*hmc_n_defl + 10, lat.ndof),
@@ -493,6 +498,7 @@ int main(int argc, char** argv) {
         std_params.cg_tol = tol;
         std_params.use_mg = false;
         std_params.c_sw = c_sw;
+        std_params.mu_t = mu_t;
         std_params.use_eo = use_eo;
 
         MultiScaleParams ms_params;
@@ -503,6 +509,7 @@ int main(int argc, char** argv) {
         ms_params.cg_maxiter = max_iter;
         ms_params.cg_tol = tol;
         ms_params.c_sw = c_sw;
+        ms_params.mu_t = mu_t;
         ms_params.use_eo = use_eo;
 
         int std_accept = 0, ms_accept = 0;
@@ -559,7 +566,7 @@ int main(int argc, char** argv) {
             ms_rows.push_back({res_ms, t_ms, gauge_ms.avg_plaq()});
 
             // Evolve deflation state after multi-timescale trajectory
-            DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw);
+            DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw, mu_t);
             bool do_fresh = (hmc_fresh_period > 0) && ((t+1) % hmc_fresh_period == 0);
             evolve_deflation_state(defl, D_new, do_fresh);
 
@@ -693,7 +700,7 @@ int main(int argc, char** argv) {
 
         // --- Build MG hierarchy ---
         std::cout << "--- Building MG hierarchy ---\n";
-        DiracOp D_mg(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D_mg(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A_mg = [&D_mg](const Vec& s, Vec& d) { D_mg.apply_DdagD(s, d); };
         std::mt19937 rng_mg(seed + 111);
         auto mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
@@ -741,6 +748,7 @@ int main(int argc, char** argv) {
         std_params.cg_tol = tol;
         std_params.use_mg = false;
         std_params.c_sw = c_sw;
+        std_params.mu_t = mu_t;
         std_params.use_eo = use_eo;
 
         // Multi-timescale
@@ -752,6 +760,7 @@ int main(int argc, char** argv) {
         ms_params.cg_maxiter = max_iter;
         ms_params.cg_tol = tol;
         ms_params.c_sw = c_sw;
+        ms_params.mu_t = mu_t;
         ms_params.use_eo = use_eo;
         if (hmc_omelyan) ms_params.outer_type = OuterIntegrator::Omelyan;
         if (hmc_force_gradient) ms_params.outer_type = OuterIntegrator::FGI;
@@ -871,7 +880,7 @@ int main(int argc, char** argv) {
             // Evolve coarse deflation after MS trajectory
             // Rebuild sparse Ac for new gauge + RR evolve
             if (res_ms.accepted) {
-                DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw);
+                DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw, mu_t);
                 OpApply A_new = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
                 mg.sparse_Ac.build(P, A_new, D_new.lat.ndof);
                 evolve_coarse_deflation(cdefl, mg.sparse_Ac);
@@ -995,7 +1004,7 @@ int main(int argc, char** argv) {
                           << " HMC trajectories (beta=" << hmc_beta
                           << " tau=" << hmc_tau << " steps=" << hmc_steps << ") ---\n";
 
-                DiracOp D_therm(lat, gauge, mass, wilson_r, c_sw);
+                DiracOp D_therm(lat, gauge, mass, wilson_r, c_sw, mu_t);
                 OpApply A_therm = [&D_therm](const Vec& s, Vec& d){ D_therm.apply_DdagD(s, d); };
                 std::mt19937 rng_therm(seed);
                 auto mg_therm = build_mg_hierarchy(D_therm, mg_levels, block_size, k_null,
@@ -1018,7 +1027,7 @@ int main(int argc, char** argv) {
                 int accepted = 0;
                 for (int t = 0; t < hmc_therm; t++) {
                     if (t > 0 && t % 5 == 0) {
-                        DiracOp D_rebuild(lat, gauge, mass, wilson_r, c_sw);
+                        DiracOp D_rebuild(lat, gauge, mass, wilson_r, c_sw, mu_t);
                         OpApply A_rebuild = [&D_rebuild](const Vec& s, Vec& d){ D_rebuild.apply_DdagD(s, d); };
                         mg_therm = build_mg_hierarchy(D_rebuild, mg_levels, block_size, k_null,
                                                        coarse_block, 20, rng_therm, w_cycle,
@@ -1129,7 +1138,7 @@ int main(int argc, char** argv) {
             std::cout << "==========================================================\n";
 
             // Build MG hierarchy for this config
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
             std::mt19937 rng_mg(seed + 111);
             auto mg = build_mg_hierarchy(D, mg_levels, cfg.blk, cfg.knull,
@@ -1143,7 +1152,7 @@ int main(int argc, char** argv) {
 
             // Evolution study
             GaugeField gauge_ev = gauge;
-            auto D_ev = std::make_unique<DiracOp>(lat, gauge_ev, mass, wilson_r, c_sw);
+            auto D_ev = std::make_unique<DiracOp>(lat, gauge_ev, mass, wilson_r, c_sw, mu_t);
             OpApply A_ev = [&D_ev](const Vec& s, Vec& d){ D_ev->apply_DdagD(s, d); };
             std::mt19937 rng_ev(seed + 777);
 
@@ -1175,7 +1184,7 @@ int main(int argc, char** argv) {
                 for (int mu = 0; mu < 2; mu++)
                     for (int s = 0; s < lat.V; s++)
                         gauge_ev.U[mu][s] *= std::exp(cx(0, eps * mom.pi[mu][s]));
-                D_ev = std::make_unique<DiracOp>(lat, gauge_ev, mass, wilson_r, c_sw);
+                D_ev = std::make_unique<DiracOp>(lat, gauge_ev, mass, wilson_r, c_sw, mu_t);
                 A_ev = [&D_ev](const Vec& s, Vec& d){ D_ev->apply_DdagD(s, d); };
 
                 // Galerkin rebuild only every galerkin_period steps
@@ -1279,7 +1288,7 @@ int main(int argc, char** argv) {
         int ndefl = n_defl_vecs > 0 ? n_defl_vecs : k_null * 4;
         std::cout << "=== Test: Coarse Eigenvector Prolongation ===\n\n";
 
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
         std::mt19937 rng_mg(seed);
         auto mg = build_mg_hierarchy(D, mg_levels, block_size, k_null,
@@ -1958,7 +1967,7 @@ int main(int argc, char** argv) {
                     std::mt19937 rng_m8(seed + 8888);
                     mom_m8.randomise(rng_m8);
 
-                    auto D_m8 = std::make_unique<DiracOp>(lat, gauge_m8, mass, wilson_r, c_sw);
+                    auto D_m8 = std::make_unique<DiracOp>(lat, gauge_m8, mass, wilson_r, c_sw, mu_t);
                     OpApply A_m8 = [&D_m8](const Vec& s, Vec& d){ D_m8->apply_DdagD(s, d); };
 
                     // Initial eigenvectors from TRLM
@@ -2020,7 +2029,7 @@ int main(int argc, char** argv) {
                             for (int sv = 0; sv < lat.V; sv++)
                                 gauge_m8.U[mu][sv] *= std::exp(cx(0, dt * mom_m8.pi[mu][sv]));
 
-                        D_m8 = std::make_unique<DiracOp>(lat, gauge_m8, mass, wilson_r, c_sw);
+                        D_m8 = std::make_unique<DiracOp>(lat, gauge_m8, mass, wilson_r, c_sw, mu_t);
 
                         if (method == 1) {
                             // RR projection
@@ -2121,7 +2130,7 @@ int main(int argc, char** argv) {
                 std::mt19937 rng_h(seed + 8888);
                 mom_h.randomise(rng_h);
 
-                auto D_h = std::make_unique<DiracOp>(lat, gauge_h, mass, wilson_r, c_sw);
+                auto D_h = std::make_unique<DiracOp>(lat, gauge_h, mass, wilson_r, c_sw, mu_t);
                 OpApply A_h = [&D_h](const Vec& s, Vec& d){ D_h->apply_DdagD(s, d); };
                 auto applyD = [&D_h](const Vec& s, Vec& d){ D_h->apply(s, d); };
 
@@ -2171,7 +2180,7 @@ int main(int argc, char** argv) {
                         for (int sv = 0; sv < lat.V; sv++)
                             gauge_h.U[mu][sv] *= std::exp(cx(0, dt * mom_h.pi[mu][sv]));
 
-                    D_h = std::make_unique<DiracOp>(lat, gauge_h, mass, wilson_r, c_sw);
+                    D_h = std::make_unique<DiracOp>(lat, gauge_h, mass, wilson_r, c_sw, mu_t);
 
                     if (do_lanczos) {
                         // Lanczos extension step: brings new directions
@@ -2241,7 +2250,7 @@ int main(int argc, char** argv) {
 
             // Power iteration to estimate λ_max once
             GaugeField gauge_lmax = gauge;
-            DiracOp D_lmax(lat, gauge_lmax, mass, wilson_r, c_sw);
+            DiracOp D_lmax(lat, gauge_lmax, mass, wilson_r, c_sw, mu_t);
             OpApply A_lmax = [&D_lmax](const Vec& s, Vec& d){ D_lmax.apply_DdagD(s, d); };
             double lambda_max_est = 0;
             {
@@ -2285,7 +2294,7 @@ int main(int argc, char** argv) {
                 std::mt19937 rng_t(seed + 9999);
                 mom_t.randomise(rng_t);
 
-                auto D_t = std::make_unique<DiracOp>(lat, gauge_t, mass, wilson_r, c_sw);
+                auto D_t = std::make_unique<DiracOp>(lat, gauge_t, mass, wilson_r, c_sw, mu_t);
                 OpApply A_t = [&D_t](const Vec& s, Vec& d){ D_t->apply_DdagD(s, d); };
                 auto applyD_t = [&D_t](const Vec& s, Vec& d){ D_t->apply(s, d); };
 
@@ -2380,7 +2389,7 @@ int main(int argc, char** argv) {
                             gauge_t.U[mu][sv] *= std::exp(cx(0, dt * mom_t.pi[mu][sv]));
 
                     // Recreate Dirac operator for new gauge
-                    D_t = std::make_unique<DiracOp>(lat, gauge_t, mass, wilson_r, c_sw);
+                    D_t = std::make_unique<DiracOp>(lat, gauge_t, mass, wilson_r, c_sw, mu_t);
 
                     // 4. CG solve (simulating fermion force computation)
                     //    Harvest Ritz pairs for free
@@ -2493,7 +2502,7 @@ int main(int argc, char** argv) {
 
         for (int step = 0; step < n_steps; step++) {
             perturb_gauge(gauge, rng, eps);
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             Vec rhs = random_vec(lat.ndof, rng);
             OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
 
@@ -2545,7 +2554,7 @@ int main(int argc, char** argv) {
     // -----------------------------------------------------------------
     auto t_setup_start = Clock::now();
 
-    DiracOp D0(lat, gauge, mass, wilson_r, c_sw);
+    DiracOp D0(lat, gauge, mass, wilson_r, c_sw, mu_t);
 
     std::unique_ptr<MGHierarchy> mg_stale;
 
@@ -2641,7 +2650,7 @@ int main(int argc, char** argv) {
 
         for (int step = 0; step < n_steps; step++) {
             perturb_gauge(gauge, rng, eps);
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             Vec rhs = random_vec(lat.ndof, rng);
             OpApply A = [&D](const Vec& s, Vec& d){ D.apply_DdagD(s, d); };
 
@@ -2827,7 +2836,7 @@ int main(int argc, char** argv) {
 
         for (int step = 0; step < n_steps; step++) {
             perturb_gauge(gauge, rng, eps);
-            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             Vec rhs = random_vec(lat.ndof, rng);
 
             auto t0 = Clock::now();
