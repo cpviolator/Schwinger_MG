@@ -1125,6 +1125,9 @@ RREvolveResult rr_evolve(
     lanczos_eigen(M_cols, k, evals, evecs);
     // evals sorted ascending, evecs[row][col] = row-th component of col-th eigenvector
 
+    // Store rotation matrix (eigenvectors of M) for forecasting
+    result.rotation = evecs;  // k×k, evecs[row][col]
+
     // Rotate eigenvectors: new_v_i = sum_j evecs[j][i] * old_v_j
     // Also rotate AV for residual computation
     result.eigvecs.resize(k);
@@ -1217,6 +1220,124 @@ ForceEvolveResult force_evolve(
     result.max_residual = -1;
 
     return result;
+}
+
+// =========================================================================
+// Chronological generator forecasting
+// =========================================================================
+
+// Extract Hermitian generator H from unitary rotation U.
+// First-order approximation: H ≈ -i(U - I), Hermitianised as (H + H†)/2.
+// Accurate to O(θ²) when eigenangles θ_j are small.
+// U stored as evecs[row][col] from lanczos_eigen.
+void extract_generator(const std::vector<Vec>& U, int k,
+                       std::vector<Vec>& H) {
+    H.resize(k, Vec(k, 0.0));
+    cx mi(0, -1);  // -i
+    for (int i = 0; i < k; i++) {
+        for (int j = 0; j < k; j++) {
+            cx u_ij = U[i][j];
+            if (i == j) u_ij -= 1.0;  // U - I
+            H[j][i] = mi * u_ij;     // -i(U - I), stored as H[col][row]
+        }
+    }
+    // Hermitianise: H = (H + H†)/2
+    for (int i = 0; i < k; i++) {
+        for (int j = i + 1; j < k; j++) {
+            cx avg = 0.5 * (H[j][i] + std::conj(H[i][j]));
+            H[j][i] = avg;
+            H[i][j] = std::conj(avg);
+        }
+        H[i][i] = std::real(H[i][i]);  // diagonal is real
+    }
+}
+
+// Extrapolate generator history and construct R_pred = exp(i H_pred).
+// Linear (2 pts): H_pred = 2 H[0] - H[1]
+// Quadratic (3 pts): H_pred = 3 H[0] - 3 H[1] + H[2]
+// Returns k×k unitary matrix as cols[col][row].
+std::vector<Vec> forecast_rotation(const EigenForecastState& state) {
+    int k = state.k;
+    int n = state.history_len;
+
+    // Extrapolate H_pred
+    std::vector<Vec> H_pred(k, Vec(k, 0.0));
+    if (n >= 3) {
+        // Quadratic: 3 H[0] - 3 H[1] + H[2]
+        for (int i = 0; i < k; i++)
+            for (int j = 0; j < k; j++)
+                H_pred[i][j] = 3.0*state.H_history[0][i][j]
+                              - 3.0*state.H_history[1][i][j]
+                              +     state.H_history[2][i][j];
+    } else {
+        // Linear: 2 H[0] - H[1]
+        for (int i = 0; i < k; i++)
+            for (int j = 0; j < k; j++)
+                H_pred[i][j] = 2.0*state.H_history[0][i][j]
+                              -     state.H_history[1][i][j];
+    }
+
+    // Compute R = exp(i H_pred) via eigendecomposition of Hermitian H_pred
+    RVec evals;
+    std::vector<Vec> evecs;
+    lanczos_eigen(H_pred, k, evals, evecs);
+    // evecs[row][col] = row-th component of col-th eigenvector
+    // evals = θ_j (eigenvalues of H_pred)
+
+    // R = V diag(e^{iθ}) V†  where V = evecs
+    // R[col][row] = Σ_m evecs[row][m] * e^{iθ_m} * conj(evecs[col][m])
+    std::vector<Vec> R(k, Vec(k, 0.0));
+    for (int i = 0; i < k; i++) {       // row
+        for (int j = 0; j < k; j++) {   // col
+            cx sum = 0.0;
+            for (int m = 0; m < k; m++) {
+                sum += evecs[i][m] * std::exp(cx(0, evals[m])) * std::conj(evecs[j][m]);
+            }
+            R[j][i] = sum;  // stored as R[col][row]
+        }
+    }
+    return R;
+}
+
+// Apply k×k rotation R to eigenvectors: new_v_i = Σ_j R[j][i] * old_v_j
+// R stored as R[col][row] matching evecs convention from lanczos_eigen
+void apply_rotation(std::vector<Vec>& eigvecs,
+                    const std::vector<Vec>& R, int n) {
+    int k = (int)eigvecs.size();
+    std::vector<Vec> rotated(k);
+    for (int i = 0; i < k; i++) {
+        rotated[i] = zeros(n);
+        for (int j = 0; j < k; j++) {
+            axpy(R[j][i], eigvecs[j], rotated[i]);
+        }
+    }
+    eigvecs = std::move(rotated);
+}
+
+// Multiply two k×k matrices: C = A × B (stored as cols[col][row])
+void mat_mul_kk(const std::vector<Vec>& A, const std::vector<Vec>& B,
+                std::vector<Vec>& C, int k) {
+    C.resize(k, Vec(k, 0.0));
+    // C[col_c][row] = Σ_m A[m][row] * B[col_c][m]
+    // In matrix terms: C_rc = Σ_m A_rm * B_mc
+    for (int r = 0; r < k; r++) {
+        for (int c = 0; c < k; c++) {
+            cx sum = 0.0;
+            for (int m = 0; m < k; m++) {
+                sum += A[m][r] * B[c][m];
+            }
+            C[c][r] = sum;
+        }
+    }
+}
+
+// Frobenius norm of k×k matrix stored as cols[col][row]
+double frobenius_norm(const std::vector<Vec>& M, int k) {
+    double sum = 0.0;
+    for (int j = 0; j < k; j++)
+        for (int i = 0; i < k; i++)
+            sum += std::norm(M[j][i]);
+    return std::sqrt(sum);
 }
 
 // =========================================================================

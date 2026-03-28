@@ -1491,11 +1491,63 @@ void coarse_lowmode_force(const DiracOp& D,
 }
 
 void evolve_coarse_deflation(CoarseDeflState& cdefl,
-    const SparseCoarseOp& Ac_new)
+    const SparseCoarseOp& Ac_new,
+    EigenForecastState* forecast)
 {
     if (cdefl.eigvecs.empty()) return;
+    int k = (int)cdefl.eigvecs.size();
+
+    // Pre-rotate if forecast has enough history
+    std::vector<Vec> R_pred;
+    bool did_forecast = false;
+    if (forecast && forecast->history_len >= 2) {
+        R_pred = forecast_rotation(*forecast);
+        apply_rotation(cdefl.eigvecs, R_pred, Ac_new.dim);
+        did_forecast = true;
+    }
+
+    // RR on (possibly pre-rotated) eigenvectors
     OpApply op = Ac_new.as_op();
     auto rr = rr_evolve(op, cdefl.eigvecs, Ac_new.dim);
+
+    // Extract generator from the rotation
+    if (forecast) {
+        std::vector<Vec> H_full;
+        if (did_forecast) {
+            // Full rotation = U_correction × R_pred
+            std::vector<Vec> U_full;
+            mat_mul_kk(rr.rotation, R_pred, U_full, k);
+            extract_generator(U_full, k, H_full);
+
+            // Print diagnostic: ||H_correction|| vs ||H_full||
+            std::vector<Vec> H_corr;
+            extract_generator(rr.rotation, k, H_corr);
+            double norm_corr = frobenius_norm(H_corr, k);
+            double norm_full = frobenius_norm(H_full, k);
+            std::cout << "  [forecast] ||H||=" << std::scientific << std::setprecision(3) << norm_full
+                      << "  ||H_corr||=" << norm_corr
+                      << "  ratio=" << std::fixed << std::setprecision(4)
+                      << (norm_full > 1e-30 ? norm_corr / norm_full : 0.0) << "\n";
+        } else {
+            // No forecast applied — U from RR is the full rotation
+            extract_generator(rr.rotation, k, H_full);
+            double norm_full = frobenius_norm(H_full, k);
+            std::cout << "  [forecast] ||H||=" << std::scientific << std::setprecision(3) << norm_full
+                      << "  (collecting history " << forecast->history_len + 1 << "/"
+                      << EigenForecastState::max_history << ")\n";
+        }
+
+        // Store in history (push front, drop oldest if full)
+        forecast->k = k;
+        if (forecast->history_len < EigenForecastState::max_history) {
+            forecast->H_history.insert(forecast->H_history.begin(), std::move(H_full));
+            forecast->history_len++;
+        } else {
+            forecast->H_history.pop_back();
+            forecast->H_history.insert(forecast->H_history.begin(), std::move(H_full));
+        }
+    }
+
     cdefl.eigvecs = std::move(rr.eigvecs);
     cdefl.eigvals = std::move(rr.eigvals);
 }

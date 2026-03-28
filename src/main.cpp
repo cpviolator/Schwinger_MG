@@ -83,6 +83,7 @@ void print_usage(const char* prog) {
         << "  --hmc-omelyan         Use Omelyan (2MN) outer integrator\n"
         << "  --hmc-force-gradient  Use nested FGI (MILC PQPQP) outer integrator\n"
         << "  --hmc-defl-refresh <N> Refresh coarse deflation every N inner steps [0=off]\n"
+        << "  --hmc-eigen-forecast  Enable chronological eigenspace forecasting\n"
         << "  --hmc-revtest         Run reversibility test (forward+backward)\n"
         << "  --verify-forces       Numerical derivative force verification\n"
         << "  --hmc-fresh-period <N> Fresh TRLM every N trajectories  [10]\n"
@@ -208,6 +209,7 @@ int main(int argc, char** argv) {
     bool   hmc_revtest = false;
     bool   verify_forces_flag = false;
     int    hmc_defl_refresh = 0;
+    bool   hmc_eigen_forecast = false;
     bool   use_eo = false;
     int    hmc_n_outer = 10;
     int    hmc_n_inner = 5;
@@ -268,6 +270,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-revtest")) hmc_revtest = true;
         else if (match("--verify-forces")) verify_forces_flag = true;
         else if (match("--hmc-defl-refresh")) hmc_defl_refresh = std::atoi(argv[++i]);
+        else if (match("--hmc-eigen-forecast")) hmc_eigen_forecast = true;
         else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
         else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
@@ -826,6 +829,7 @@ int main(int argc, char** argv) {
         double std_time_sum = 0, ms_time_sum = 0;
         double ms_low_time_sum = 0, ms_high_time_sum = 0;
         int ms_low_evals_sum = 0;
+        EigenForecastState eigen_forecast;
 
         // --- Standard HMC header ---
         std::cout << "--- Standard HMC (reference) ---\n";
@@ -883,7 +887,8 @@ int main(int argc, char** argv) {
                 DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw, mu_t);
                 OpApply A_new = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
                 mg.sparse_Ac.build(P, A_new, D_new.lat.ndof);
-                evolve_coarse_deflation(cdefl, mg.sparse_Ac);
+                evolve_coarse_deflation(cdefl, mg.sparse_Ac,
+                                       hmc_eigen_forecast ? &eigen_forecast : nullptr);
             }
 
             // Periodically do fresh TRLM
@@ -891,6 +896,7 @@ int main(int argc, char** argv) {
                 mg.sparse_Ac.setup_deflation(n_defl);
                 cdefl.eigvecs = mg.sparse_Ac.defl_vecs;
                 cdefl.eigvals = mg.sparse_Ac.defl_vals;
+                if (hmc_eigen_forecast) eigen_forecast.reset(); // fresh TRLM = discontinuity
             }
 
             // Print standard HMC row

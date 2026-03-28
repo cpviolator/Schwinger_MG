@@ -261,8 +261,12 @@ void coarse_lowmode_force(const DiracOp& D,
     int smooth_iters = 0);
 
 // Evolve coarse deflation state (RR on coarse operator)
+// If forecast is provided, pre-rotates eigenvectors using predicted rotation
+// and stores the generator for future predictions.
+struct EigenForecastState;  // forward declaration
 void evolve_coarse_deflation(CoarseDeflState& cdefl,
-    const SparseCoarseOp& Ac_new);
+    const SparseCoarseOp& Ac_new,
+    EigenForecastState* forecast = nullptr);
 
 // MG multi-timescale trajectory
 MGMultiScaleResult hmc_trajectory_mg_multiscale(

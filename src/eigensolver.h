@@ -90,6 +90,7 @@ struct RREvolveResult {
     std::vector<double> eigvals;
     double max_residual;  // max ||A v_i - λ_i v_i|| / ||A v_i||
     int matvecs;
+    std::vector<Vec> rotation;  // k×k rotation matrix U (eigenvectors of M)
 };
 
 RREvolveResult rr_evolve(
@@ -127,6 +128,38 @@ ForceEvolveResult force_evolve(
     const std::function<void(const Vec&, Vec&)>& apply_deltaD,
     const std::function<void(const Vec&, Vec&)>& apply_deltaD_dag,
     int n);
+
+// --- Chronological generator forecasting for eigenspace evolution ---
+// Tracks the Hermitian generator H of the RR rotation U = exp(iH) across
+// trajectories. Extrapolates H to predict the next rotation, pre-rotates
+// eigenvectors before RR to improve accuracy or enable RR skipping.
+struct EigenForecastState {
+    std::vector<std::vector<Vec>> H_history; // circular buffer of generators (k×k)
+    int k = 0;                               // eigenvector count
+    int history_len = 0;
+    static constexpr int max_history = 3;    // for quadratic extrapolation
+
+    void reset() { history_len = 0; H_history.clear(); k = 0; }
+};
+
+// Extract Hermitian generator H ≈ -i(U - I) from rotation matrix U
+void extract_generator(const std::vector<Vec>& U_evecs, int k,
+                       std::vector<Vec>& H_cols);
+
+// Extrapolate generator history and construct predicted rotation R = exp(iH_pred)
+// Returns k×k unitary matrix as cols[col][row]
+std::vector<Vec> forecast_rotation(const EigenForecastState& state);
+
+// Apply k×k rotation matrix R to eigenvectors: new_v_i = Σ_j R[j][i] * old_v_j
+void apply_rotation(std::vector<Vec>& eigvecs,
+                    const std::vector<Vec>& R, int n);
+
+// Multiply two k×k matrices: C = A × B (stored as cols[col][row])
+void mat_mul_kk(const std::vector<Vec>& A, const std::vector<Vec>& B,
+                std::vector<Vec>& C, int k);
+
+// Frobenius norm of k×k matrix
+double frobenius_norm(const std::vector<Vec>& M, int k);
 
 // Hybrid eigenvector tracker: maintains n_kr Krylov vectors with force-based
 // rotation, periodically extends with Lanczos steps using the real operator.
