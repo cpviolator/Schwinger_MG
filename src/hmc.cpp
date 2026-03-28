@@ -1024,20 +1024,24 @@ HMCResult hmc_trajectory(
             return res;
         };
 
-        // Compute H with e/o action: φ_o†x_o - 2 log det(D_ee) (for clover)
-        auto compute_H = [&]() -> double {
-            double H = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+        // Compute per-monomial Hamiltonian components
+        struct HComponents { double KE, SG, SF, LD; };
+        auto compute_H_components = [&]() -> HComponents {
+            HComponents h;
+            h.KE = mom.kinetic_energy();
+            h.SG = gauge_action(gauge, params.beta);
             DiracOp D(lat, gauge, mass, wilson_r, c_sw);
             EvenOddDiracOp eoD(D);
             OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
             auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
             total_cg += res.iterations;
-            H += std::real(dot(phi_o, res.solution));
-            if (c_sw != 0.0) H -= 2.0 * eoD.log_det_ee();
-            return H;
+            h.SF = std::real(dot(phi_o, res.solution));
+            h.LD = (c_sw != 0.0) ? -2.0 * eoD.log_det_ee() : 0.0;
+            return h;
         };
 
-        double H_init = compute_H();
+        auto H_i = compute_H_components();
+        double H_init = H_i.KE + H_i.SG + H_i.SF + H_i.LD;
 
         // Leapfrog: half-step, full steps, half-step
         std::array<RVec, 2> gf, ff;
@@ -1073,7 +1077,8 @@ HMCResult hmc_trajectory(
             for (int s = 0; s < lat.V; s++)
                 mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
 
-        double H_final = compute_H();
+        auto H_f = compute_H_components();
+        double H_final = H_f.KE + H_f.SG + H_f.SF + H_f.LD;
         double dH = H_final - H_init;
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
         bool accept = (dH < 0) || (uniform(rng) < std::exp(-dH));
@@ -1081,7 +1086,8 @@ HMCResult hmc_trajectory(
             gauge.U[0] = gauge_old.U[0];
             gauge.U[1] = gauge_old.U[1];
         }
-        return {accept, dH, 0.0, total_cg};
+        return {accept, dH, H_f.KE - H_i.KE, H_f.SG - H_i.SG,
+                H_f.SF - H_i.SF, H_f.LD - H_i.LD, total_cg};
     }
 
     // === Full-lattice path (original) ===
@@ -1089,7 +1095,9 @@ HMCResult hmc_trajectory(
     Vec phi;
     generate_pseudofermion(D_init, rng, phi);
 
-    double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    double KE_init = mom.kinetic_energy();
+    double SG_init = gauge_action(gauge, params.beta);
+    double SF_init;
     {
         OpApply A = [&D_init](const Vec& src, Vec& dst) { D_init.apply_DdagD(src, dst); };
         CGResult res;
@@ -1097,9 +1105,10 @@ HMCResult hmc_trajectory(
             res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
         else
             res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        H_init += std::real(dot(phi, res.solution));
+        SF_init = std::real(dot(phi, res.solution));
         total_cg += res.iterations;
     }
+    double H_init = KE_init + SG_init + SF_init;
 
     // Half-step momenta
     {
@@ -1176,7 +1185,9 @@ HMCResult hmc_trajectory(
     }
 
     // Final Hamiltonian
-    double H_final = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    double KE_final = mom.kinetic_energy();
+    double SG_final = gauge_action(gauge, params.beta);
+    double SF_final;
     {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
@@ -1185,9 +1196,10 @@ HMCResult hmc_trajectory(
             res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
         else
             res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        H_final += std::real(dot(phi, res.solution));
+        SF_final = std::real(dot(phi, res.solution));
         total_cg += res.iterations;
     }
+    double H_final = KE_final + SG_final + SF_final;
 
     double dH = H_final - H_init;
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -1198,7 +1210,8 @@ HMCResult hmc_trajectory(
         gauge.U[1] = gauge_old.U[1];
     }
 
-    return {accept, dH, 0.0, total_cg};
+    return {accept, dH, KE_final - KE_init, SG_final - SG_init,
+            SF_final - SF_init, 0.0, total_cg};
 }
 
 // ---------------------------------------------------------------
@@ -1284,7 +1297,9 @@ MultiScaleResult hmc_trajectory_multiscale(
     defl.update_cache(D_init);
 
     // --- Compute initial Hamiltonian (exact, full CG) ---
-    double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    double KE_init = mom.kinetic_energy();
+    double SG_init = gauge_action(gauge, params.beta);
+    double SF_init;
     {
         OpApply A = [&D_init](const Vec& src, Vec& dst) { D_init.apply_DdagD(src, dst); };
         CGResult res;
@@ -1292,9 +1307,10 @@ MultiScaleResult hmc_trajectory_multiscale(
             res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
         else
             res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        H_init += std::real(dot(phi, res.solution));
+        SF_init = std::real(dot(phi, res.solution));
         total_cg += res.iterations;
     }
+    double H_init = KE_init + SG_init + SF_init;
 
     // === OUTER HALF-KICK (slow forces: gauge + high-mode fermion) ===
     // High-mode = full fermion force - low-mode force
@@ -1396,7 +1412,9 @@ MultiScaleResult hmc_trajectory_multiscale(
     }
 
     // --- Compute final Hamiltonian (exact, full CG) ---
-    double H_final = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    double KE_final = mom.kinetic_energy();
+    double SG_final = gauge_action(gauge, params.beta);
+    double SF_final;
     {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
@@ -1405,9 +1423,10 @@ MultiScaleResult hmc_trajectory_multiscale(
             res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
         else
             res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        H_final += std::real(dot(phi, res.solution));
+        SF_final = std::real(dot(phi, res.solution));
         total_cg += res.iterations;
     }
+    double H_final = KE_final + SG_final + SF_final;
 
     double dH = H_final - H_init;
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -1418,7 +1437,8 @@ MultiScaleResult hmc_trajectory_multiscale(
         gauge.U[1] = gauge_old.U[1];
     }
 
-    return {accept, dH, total_cg, lowmode_evals, highmode_time, lowmode_time};
+    return {accept, dH, KE_final - KE_init, SG_final - SG_init, SF_final - SF_init,
+            total_cg, lowmode_evals, highmode_time, lowmode_time};
 }
 
 // ---------------------------------------------------------------
@@ -1516,24 +1536,25 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     }
 
     // --- Initial Hamiltonian ---
-    // Always use full-lattice action phi†(D†D)⁻¹phi
-    // For e/o: use e/o CG as fast solver, reconstruct, evaluate full action
-    double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    double KE_init = mom.kinetic_energy();
+    double SG_init = gauge_action(gauge, params.beta);
+    double SF_init;
     if (eo) {
         EvenOddDiracOp eoD(D_init);
         Vec phi_o_init = eoD.gather_odd(phi);
         OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
         auto res = cg_solve(A, n_half, phi_o_init, params.cg_maxiter, params.cg_tol);
         Vec x_full = eoD.reconstruct_full(res.solution);
-        H_init += std::real(dot(phi, x_full));
+        SF_init = std::real(dot(phi, x_full));
         total_cg += res.iterations;
     } else {
         OpApply A = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
         auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
                                      params.cg_maxiter, params.cg_tol);
-        H_init += std::real(dot(phi, res.solution));
+        SF_init = std::real(dot(phi, res.solution));
         total_cg += res.iterations;
     }
+    double H_init = KE_init + SG_init + SF_init;
 
     // ── Primitives ──
 
@@ -1736,7 +1757,9 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     }
 
     // --- Final Hamiltonian ---
-    double H_final = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+    double KE_final = mom.kinetic_energy();
+    double SG_final = gauge_action(gauge, params.beta);
+    double SF_final;
     if (eo) {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         EvenOddDiracOp eoD(D);
@@ -1744,16 +1767,17 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
         auto res = cg_solve(A, n_half, phi_o_fin, params.cg_maxiter, params.cg_tol);
         Vec x_full = eoD.reconstruct_full(res.solution);
-        H_final += std::real(dot(phi, x_full));
+        SF_final = std::real(dot(phi, x_full));
         total_cg += res.iterations;
     } else {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
         auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
                                      params.cg_maxiter, params.cg_tol);
-        H_final += std::real(dot(phi, res.solution));
+        SF_final = std::real(dot(phi, res.solution));
         total_cg += res.iterations;
     }
+    double H_final = KE_final + SG_final + SF_final;
 
     double dH = H_final - H_init;
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -1764,7 +1788,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         gauge.U[1] = gauge_old.U[1];
     }
 
-    return {accept, dH, total_cg, lowmode_evals, highmode_time, lowmode_time};
+    return {accept, dH, KE_final - KE_init, SG_final - SG_init, SF_final - SF_init,
+            total_cg, lowmode_evals, highmode_time, lowmode_time};
 }
 
 // ---------------------------------------------------------------

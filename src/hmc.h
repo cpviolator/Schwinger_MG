@@ -115,8 +115,11 @@ struct HMCParams {
 
 struct HMCResult {
     bool accepted;
-    double dH;
-    double accept_rate;
+    double dH;         // total Hamiltonian violation
+    double dKE;        // kinetic energy change
+    double dSG;        // gauge action change
+    double dSF;        // fermion action change
+    double dLD;        // log-det change (clover e/o only, else 0)
     int total_cg_iters;
 };
 
@@ -169,6 +172,7 @@ struct MultiScaleParams {
 struct MultiScaleResult {
     bool accepted;
     double dH;
+    double dKE, dSG, dSF;
     int highmode_cg_iters;
     int lowmode_force_evals;
     double highmode_time;
@@ -236,6 +240,7 @@ struct MGMultiScaleParams {
 struct MGMultiScaleResult {
     bool accepted;
     double dH;
+    double dKE, dSG, dSF;
     int highmode_cg_iters;
     int lowmode_force_evals;
     double highmode_time;

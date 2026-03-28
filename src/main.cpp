@@ -358,7 +358,11 @@ int main(int argc, char** argv) {
         std::cout << "beta=" << hmc_beta << "  tau=" << hmc_tau
                   << "  steps=" << hmc_steps << "  dt=" << hmc_tau/hmc_steps << "\n";
         std::cout << "trajectories=" << hmc_traj << "  therm=" << hmc_therm
-                  << "  save_every=" << hmc_save_every << "\n\n";
+                  << "  save_every=" << hmc_save_every << "\n";
+        bool has_ld = (use_eo && c_sw != 0.0);
+        std::cout << "Monomials: KE=kinetic  SG=gauge  SF=fermion";
+        if (has_ld) std::cout << "  LD=log-det";
+        std::cout << "  dH=total\n\n";
 
         HMCParams params;
         params.beta = hmc_beta;
@@ -373,15 +377,20 @@ int main(int argc, char** argv) {
         int n_accept = 0;
         int total_traj = hmc_therm + hmc_traj;
 
-        std::cout << std::setw(6) << "Traj"
+        std::cout << std::setw(5) << "Traj"
                   << std::setw(8) << "Plaq"
-                  << std::setw(10) << "dH"
-                  << std::setw(6) << "Acc"
-                  << std::setw(8) << "Rate"
-                  << std::setw(8) << "CG_it"
-                  << std::setw(10) << "Time(s)"
+                  << std::setw(9) << "dKE"
+                  << std::setw(9) << "dSG"
+                  << std::setw(9) << "dSF";
+        if (has_ld) std::cout << std::setw(9) << "dLD";
+        std::cout << std::setw(10) << "dH"
+                  << std::setw(4) << "A"
+                  << std::setw(7) << "Rate"
+                  << std::setw(6) << "CG"
+                  << std::setw(8) << "Time"
                   << "\n";
-        std::cout << std::string(56, '-') << "\n";
+        int hdr_width = 61 + (has_ld ? 9 : 0);
+        std::cout << std::string(hdr_width, '-') << "\n";
 
         int saved_count = 0;
         for (int traj = 0; traj < total_traj; traj++) {
@@ -393,14 +402,19 @@ int main(int argc, char** argv) {
             int measurement_traj = (traj >= hmc_therm) ? (traj - hmc_therm + 1) : 0;
             double rate = (measurement_traj > 0) ? (double)n_accept / measurement_traj : 0.0;
 
-            std::cout << std::setw(6) << traj
-                      << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
-                      << std::setw(10) << std::fixed << std::setprecision(4) << result.dH
-                      << std::setw(6) << (result.accepted ? "Y" : "N")
-                      << std::setw(7) << std::fixed << std::setprecision(2)
+            std::cout << std::fixed;
+            std::cout << std::setw(5) << traj
+                      << std::setw(8) << std::setprecision(4) << gauge.avg_plaq()
+                      << std::setw(9) << std::setprecision(3) << result.dKE
+                      << std::setw(9) << std::setprecision(3) << result.dSG
+                      << std::setw(9) << std::setprecision(3) << result.dSF;
+            if (has_ld) std::cout << std::setw(9) << std::setprecision(3) << result.dLD;
+            std::cout << std::setw(10) << std::setprecision(4) << result.dH
+                      << std::setw(4) << (result.accepted ? "Y" : "N")
+                      << std::setw(6) << std::setprecision(0)
                       << (traj >= hmc_therm ? 100.0*rate : 0.0) << "%"
-                      << std::setw(8) << result.total_cg_iters
-                      << std::setw(10) << std::fixed << std::setprecision(2) << dt_traj;
+                      << std::setw(6) << result.total_cg_iters
+                      << std::setw(8) << std::setprecision(2) << dt_traj;
             if (traj < hmc_therm) std::cout << " [therm]";
             std::cout << "\n";
 
@@ -443,7 +457,8 @@ int main(int argc, char** argv) {
                   << "  tau=" << hmc_tau << "\n";
         std::cout << "n_defl=" << hmc_n_defl
                   << "  fresh_period=" << hmc_fresh_period
-                  << "  traj=" << n_traj << "\n\n";
+                  << "  traj=" << n_traj << "\n";
+        std::cout << "Monomials: KE=kinetic  SG=gauge  SF=fermion  dH=total\n\n";
 
         // --- Compute initial eigenvectors ---
         std::cout << "--- Computing " << hmc_n_defl << " eigenvectors of D†D ---\n";
@@ -497,20 +512,25 @@ int main(int argc, char** argv) {
         double ms_low_time_sum = 0, ms_high_time_sum = 0;
         int ms_low_evals_sum = 0;
 
+        // --- Standard HMC block ---
+        std::cout << "--- Standard HMC (reference) ---\n";
         std::cout << std::setw(5) << "traj"
-                  << " |" << std::setw(7) << "Std_CG"
-                  << std::setw(9) << "Std_dH"
-                  << std::setw(7) << "Std_A"
-                  << std::setw(9) << "Std_t"
-                  << " |" << std::setw(7) << "MS_CG"
-                  << std::setw(9) << "MS_dH"
-                  << std::setw(7) << "MS_A"
-                  << std::setw(9) << "MS_t"
-                  << std::setw(9) << "Low_t"
-                  << std::setw(9) << "High_t"
-                  << std::setw(8) << "LowEv"
-                  << " |" << std::setw(8) << "<plaq>"
+                  << std::setw(8) << "Plaq"
+                  << std::setw(9) << "dKE"
+                  << std::setw(9) << "dSG"
+                  << std::setw(9) << "dSF"
+                  << std::setw(10) << "dH"
+                  << std::setw(4) << "A"
+                  << std::setw(6) << "CG"
+                  << std::setw(8) << "Time"
                   << "\n";
+        std::cout << std::string(68, '-') << "\n";
+
+        struct MSRowFG {
+            MultiScaleResult res;
+            double t_ms, plaq;
+        };
+        std::vector<MSRowFG> ms_rows;
 
         for (int t = 0; t < n_traj; t++) {
             // --- Standard HMC ---
@@ -536,27 +556,54 @@ int main(int argc, char** argv) {
             ms_high_time_sum += res_ms.highmode_time;
             ms_low_evals_sum += res_ms.lowmode_force_evals;
 
+            ms_rows.push_back({res_ms, t_ms, gauge_ms.avg_plaq()});
+
             // Evolve deflation state after multi-timescale trajectory
             DiracOp D_new(lat, gauge_ms, mass, wilson_r, c_sw);
             bool do_fresh = (hmc_fresh_period > 0) && ((t+1) % hmc_fresh_period == 0);
             evolve_deflation_state(defl, D_new, do_fresh);
 
-            // Print per-trajectory stats
+            // Print standard HMC row
             std::cout << std::fixed;
             std::cout << std::setw(5) << t
-                      << " |" << std::setw(7) << res_std.total_cg_iters
-                      << std::setw(9) << std::setprecision(3) << res_std.dH
-                      << std::setw(7) << (res_std.accepted ? "Y" : "N")
-                      << std::setw(9) << std::setprecision(3) << t_std
-                      << " |" << std::setw(7) << res_ms.highmode_cg_iters
-                      << std::setw(9) << std::setprecision(3) << res_ms.dH
-                      << std::setw(7) << (res_ms.accepted ? "Y" : "N")
-                      << std::setw(9) << std::setprecision(3) << t_ms
-                      << std::setw(9) << std::setprecision(3) << res_ms.lowmode_time
-                      << std::setw(9) << std::setprecision(3) << res_ms.highmode_time
-                      << std::setw(8) << res_ms.lowmode_force_evals
-                      << " |" << std::setw(8) << std::setprecision(4)
-                      << gauge_ms.avg_plaq()
+                      << std::setw(8) << std::setprecision(4) << gauge_std.avg_plaq()
+                      << std::setw(9) << std::setprecision(3) << res_std.dKE
+                      << std::setw(9) << std::setprecision(3) << res_std.dSG
+                      << std::setw(9) << std::setprecision(3) << res_std.dSF
+                      << std::setw(10) << std::setprecision(4) << res_std.dH
+                      << std::setw(4) << (res_std.accepted ? "Y" : "N")
+                      << std::setw(6) << res_std.total_cg_iters
+                      << std::setw(8) << std::setprecision(2) << t_std
+                      << "\n";
+        }
+
+        // --- Print MS block ---
+        std::cout << "\n--- Multi-timescale (fine-grid deflation) ---\n";
+        std::cout << std::setw(5) << "traj"
+                  << std::setw(8) << "Plaq"
+                  << std::setw(9) << "dKE"
+                  << std::setw(9) << "dSG"
+                  << std::setw(9) << "dSF"
+                  << std::setw(10) << "dH"
+                  << std::setw(4) << "A"
+                  << std::setw(6) << "CG"
+                  << std::setw(6) << "LEv"
+                  << std::setw(8) << "Time"
+                  << "\n";
+        std::cout << std::string(74, '-') << "\n";
+        for (int t = 0; t < n_traj; t++) {
+            auto& r = ms_rows[t];
+            std::cout << std::fixed;
+            std::cout << std::setw(5) << t
+                      << std::setw(8) << std::setprecision(4) << r.plaq
+                      << std::setw(9) << std::setprecision(3) << r.res.dKE
+                      << std::setw(9) << std::setprecision(3) << r.res.dSG
+                      << std::setw(9) << std::setprecision(3) << r.res.dSF
+                      << std::setw(10) << std::setprecision(4) << r.res.dH
+                      << std::setw(4) << (r.res.accepted ? "Y" : "N")
+                      << std::setw(6) << r.res.highmode_cg_iters
+                      << std::setw(6) << r.res.lowmode_force_evals
+                      << std::setw(8) << std::setprecision(2) << r.t_ms
                       << "\n";
         }
 
@@ -620,7 +667,8 @@ int main(int argc, char** argv) {
         std::cout << "n_outer=" << hmc_n_outer << "  n_inner=" << hmc_n_inner
                   << "  total_steps=" << total_steps
                   << "  tau=" << hmc_tau << "\n";
-        std::cout << "n_defl=" << n_defl << "  traj=" << n_traj << "\n\n";
+        std::cout << "n_defl=" << n_defl << "  traj=" << n_traj << "\n";
+        std::cout << "Monomials: KE=kinetic  SG=gauge  SF=fermion  dH=total\n\n";
 
         // --- Load thermalised config if available ---
         {
@@ -770,20 +818,28 @@ int main(int argc, char** argv) {
         double ms_low_time_sum = 0, ms_high_time_sum = 0;
         int ms_low_evals_sum = 0;
 
+        // --- Standard HMC header ---
+        std::cout << "--- Standard HMC (reference) ---\n";
         std::cout << std::setw(5) << "traj"
-                  << " |" << std::setw(7) << "Std_CG"
-                  << std::setw(9) << "Std_dH"
-                  << std::setw(5) << "A"
-                  << std::setw(9) << "Std_t"
-                  << " |" << std::setw(7) << "MS_CG"
-                  << std::setw(9) << "MS_dH"
-                  << std::setw(5) << "A"
-                  << std::setw(9) << "MS_t"
-                  << std::setw(8) << "Low_t"
-                  << std::setw(8) << "Hi_t"
-                  << std::setw(6) << "LEv"
-                  << " |" << std::setw(8) << "<plaq>"
+                  << std::setw(8) << "Plaq"
+                  << std::setw(9) << "dKE"
+                  << std::setw(9) << "dSG"
+                  << std::setw(9) << "dSF"
+                  << std::setw(10) << "dH"
+                  << std::setw(4) << "A"
+                  << std::setw(6) << "CG"
+                  << std::setw(8) << "Time"
                   << "\n";
+        std::cout << std::string(68, '-') << "\n";
+
+        // --- MS HMC header (printed after std block) ---
+
+        // Storage for MS results to print after std
+        struct MSRow {
+            MGMultiScaleResult res;
+            double t_ms, plaq;
+        };
+        std::vector<MSRow> ms_rows;
 
         for (int t = 0; t < n_traj; t++) {
             // --- Standard HMC (MG-preconditioned) ---
@@ -810,6 +866,8 @@ int main(int argc, char** argv) {
             ms_high_time_sum += res_ms.highmode_time;
             ms_low_evals_sum += res_ms.lowmode_force_evals;
 
+            ms_rows.push_back({res_ms, t_ms, gauge_ms.avg_plaq()});
+
             // Evolve coarse deflation after MS trajectory
             // Rebuild sparse Ac for new gauge + RR evolve
             if (res_ms.accepted) {
@@ -826,21 +884,47 @@ int main(int argc, char** argv) {
                 cdefl.eigvals = mg.sparse_Ac.defl_vals;
             }
 
+            // Print standard HMC row
             std::cout << std::fixed;
             std::cout << std::setw(5) << t
-                      << " |" << std::setw(7) << res_std.total_cg_iters
-                      << std::setw(9) << std::setprecision(3) << res_std.dH
-                      << std::setw(5) << (res_std.accepted ? "Y" : "N")
-                      << std::setw(9) << std::setprecision(3) << t_std
-                      << " |" << std::setw(7) << res_ms.highmode_cg_iters
-                      << std::setw(9) << std::setprecision(3) << res_ms.dH
-                      << std::setw(5) << (res_ms.accepted ? "Y" : "N")
-                      << std::setw(9) << std::setprecision(3) << t_ms
-                      << std::setw(8) << std::setprecision(3) << res_ms.lowmode_time
-                      << std::setw(8) << std::setprecision(3) << res_ms.highmode_time
-                      << std::setw(6) << res_ms.lowmode_force_evals
-                      << " |" << std::setw(8) << std::setprecision(4)
-                      << gauge_ms.avg_plaq()
+                      << std::setw(8) << std::setprecision(4) << gauge_std.avg_plaq()
+                      << std::setw(9) << std::setprecision(3) << res_std.dKE
+                      << std::setw(9) << std::setprecision(3) << res_std.dSG
+                      << std::setw(9) << std::setprecision(3) << res_std.dSF
+                      << std::setw(10) << std::setprecision(4) << res_std.dH
+                      << std::setw(4) << (res_std.accepted ? "Y" : "N")
+                      << std::setw(6) << res_std.total_cg_iters
+                      << std::setw(8) << std::setprecision(2) << t_std
+                      << "\n";
+        }
+
+        // --- Print MS block ---
+        std::cout << "\n--- MG Multi-timescale ---\n";
+        std::cout << std::setw(5) << "traj"
+                  << std::setw(8) << "Plaq"
+                  << std::setw(9) << "dKE"
+                  << std::setw(9) << "dSG"
+                  << std::setw(9) << "dSF"
+                  << std::setw(10) << "dH"
+                  << std::setw(4) << "A"
+                  << std::setw(6) << "CG"
+                  << std::setw(6) << "LEv"
+                  << std::setw(8) << "Time"
+                  << "\n";
+        std::cout << std::string(74, '-') << "\n";
+        for (int t = 0; t < n_traj; t++) {
+            auto& r = ms_rows[t];
+            std::cout << std::fixed;
+            std::cout << std::setw(5) << t
+                      << std::setw(8) << std::setprecision(4) << r.plaq
+                      << std::setw(9) << std::setprecision(3) << r.res.dKE
+                      << std::setw(9) << std::setprecision(3) << r.res.dSG
+                      << std::setw(9) << std::setprecision(3) << r.res.dSF
+                      << std::setw(10) << std::setprecision(4) << r.res.dH
+                      << std::setw(4) << (r.res.accepted ? "Y" : "N")
+                      << std::setw(6) << r.res.highmode_cg_iters
+                      << std::setw(6) << r.res.lowmode_force_evals
+                      << std::setw(8) << std::setprecision(2) << r.t_ms
                       << "\n";
         }
 
