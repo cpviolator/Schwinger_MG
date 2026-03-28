@@ -8,126 +8,33 @@
 #include <iostream>
 
 // ---------------------------------------------------------------
-//  Unpreconditioned CG for HPD operator (D†D)
+//  Unified CG solver for HPD operators
+//  Handles: unpreconditioned, with initial guess, preconditioned
+//  x0: optional initial guess (nullptr = start from zero)
+//  precond: optional HPD preconditioner (nullptr = identity)
 // ---------------------------------------------------------------
-CGResult cg_solve(
-    const OpApply& A,
-    int n,
-    const Vec& rhs,
-    int max_iter,
-    double tol
-) {
+static CGResult cg_solve_core(
+    const OpApply& A, int n, const Vec& rhs,
+    const Vec* x0,
+    const std::function<Vec(const Vec&)>* precond,
+    int max_iter, double tol)
+{
     double rhs_norm = norm(rhs);
     if (rhs_norm < 1e-30) return {zeros(n), 0, 0.0};
 
-    Vec x = zeros(n);
-    // r = rhs - A*x = rhs (since x=0)
-    Vec r(rhs);
-    Vec p(r);
-    cx rr = dot(r, r);
-    int iter = 0;
-
-    while (iter < max_iter) {
-        Vec Ap(n);
-        A(p, Ap);
-        cx pAp = dot(p, Ap);
-        cx alpha = rr / pAp;
-
-        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
-        for (int i = 0; i < n; i++) {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * Ap[i];
-        }
-        iter++;
-
-        double rnorm = norm(r);
-        if (rnorm / rhs_norm < tol) break;
-
-        cx rr_new = dot(r, r);
-        cx beta = rr_new / rr;
-        rr = rr_new;
-
-        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
-        for (int i = 0; i < n; i++)
-            p[i] = r[i] + beta * p[i];
-    }
-
-    double final_res = norm(r) / rhs_norm;
-    return {x, iter, final_res};
-}
-
-// ---------------------------------------------------------------
-//  CG with non-zero initial guess
-// ---------------------------------------------------------------
-CGResult cg_solve_x0(
-    const OpApply& A,
-    int n,
-    const Vec& rhs,
-    const Vec& x0,
-    int max_iter,
-    double tol
-) {
-    double rhs_norm = norm(rhs);
-    if (rhs_norm < 1e-30) return {zeros(n), 0, 0.0};
-
-    Vec x = x0;
-    Vec Ax(n);
-    A(x, Ax);
+    // Initialise x and r
+    Vec x = (x0 && !x0->empty()) ? *x0 : zeros(n);
     Vec r(n);
-    #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
-    for (int i = 0; i < n; i++) r[i] = rhs[i] - Ax[i];
-
-    Vec p(r);
-    cx rr = dot(r, r);
-    int iter = 0;
-
-    while (iter < max_iter) {
-        Vec Ap(n);
-        A(p, Ap);
-        cx pAp = dot(p, Ap);
-        cx alpha = rr / pAp;
-
+    if (x0 && !x0->empty()) {
+        Vec Ax(n); A(x, Ax);
         #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
-        for (int i = 0; i < n; i++) {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * Ap[i];
-        }
-        iter++;
-
-        double rnorm = norm(r);
-        if (rnorm / rhs_norm < tol) break;
-
-        cx rr_new = dot(r, r);
-        cx beta = rr_new / rr;
-        rr = rr_new;
-
-        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
-        for (int i = 0; i < n; i++)
-            p[i] = r[i] + beta * p[i];
+        for (int i = 0; i < n; i++) r[i] = rhs[i] - Ax[i];
+    } else {
+        r = rhs;
     }
 
-    double final_res = norm(r) / rhs_norm;
-    return {x, iter, final_res};
-}
-
-// ---------------------------------------------------------------
-//  Preconditioned CG for HPD operator with HPD preconditioner
-//  Requires M^{-1} to be hermitian positive definite (symmetric MG).
-// ---------------------------------------------------------------
-CGResult cg_solve_precond(
-    const OpApply& A,
-    int n,
-    const Vec& rhs,
-    const std::function<Vec(const Vec&)>& precond,
-    int max_iter,
-    double tol
-) {
-    double rhs_norm = norm(rhs);
-    if (rhs_norm < 1e-30) return {zeros(n), 0, 0.0};
-
-    Vec x = zeros(n);
-    Vec r(rhs);
-    Vec z = precond(r);
+    // Initialise search direction (preconditioned or not)
+    Vec z = precond ? (*precond)(r) : r;
     Vec p(z);
     cx rz = dot(r, z);
     int iter = 0;
@@ -148,7 +55,7 @@ CGResult cg_solve_precond(
         double rnorm = norm(r);
         if (rnorm / rhs_norm < tol) break;
 
-        z = precond(r);
+        z = precond ? (*precond)(r) : r;
         cx rz_new = dot(r, z);
         cx beta = rz_new / rz;
         rz = rz_new;
@@ -158,8 +65,24 @@ CGResult cg_solve_precond(
             p[i] = z[i] + beta * p[i];
     }
 
-    double final_res = norm(r) / rhs_norm;
-    return {x, iter, final_res};
+    return {x, iter, norm(r) / rhs_norm};
+}
+
+// Public API: thin wrappers around cg_solve_core
+CGResult cg_solve(const OpApply& A, int n, const Vec& rhs,
+                  int max_iter, double tol) {
+    return cg_solve_core(A, n, rhs, nullptr, nullptr, max_iter, tol);
+}
+
+CGResult cg_solve_x0(const OpApply& A, int n, const Vec& rhs,
+                     const Vec& x0, int max_iter, double tol) {
+    return cg_solve_core(A, n, rhs, &x0, nullptr, max_iter, tol);
+}
+
+CGResult cg_solve_precond(const OpApply& A, int n, const Vec& rhs,
+                          const std::function<Vec(const Vec&)>& precond,
+                          int max_iter, double tol) {
+    return cg_solve_core(A, n, rhs, nullptr, &precond, max_iter, tol);
 }
 
 // ---------------------------------------------------------------

@@ -123,14 +123,21 @@ FermionActionResult fermion_action_precond(
     return {act, std::move(res.solution), res.iterations};
 }
 
+void fermion_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
+                            std::array<RVec, 2>& force);
+
 void fermion_force(const DiracOp& D, const Vec& X,
                    std::array<RVec, 2>& force) {
+    Vec chi(D.lat.ndof);
+    D.apply(X, chi);
+    fermion_force_bilinear(D, chi, X, force);
+}
+
+void fermion_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
+                            std::array<RVec, 2>& force) {
     const Lattice& lat = D.lat;
     force[0].assign(lat.V, 0.0);
     force[1].assign(lat.V, 0.0);
-
-    Vec chi(lat.ndof);
-    D.apply(X, chi);
 
     // Hopping term contribution (standard Wilson)
     for (int s = 0; s < lat.V; s++) {
@@ -175,7 +182,16 @@ void fermion_force(const DiracOp& D, const Vec& X,
         }
     }
 
-    // Clover term contribution
+    // Clover term contribution (factored into separate function)
+    if (D.c_sw != 0.0)
+        fermion_force_clover(D, chi, X, force);
+}
+
+// Clover force: derivative of the clover field w.r.t. gauge links
+// Accumulates into force (does not zero it)
+void fermion_force_clover(const DiracOp& D, const Vec& chi, const Vec& X,
+                          std::array<RVec, 2>& force) {
+    const Lattice& lat = D.lat;
     // The clover adds (c_sw/2) F_01(x) σ_3 to the Dirac operator.
     // The force from D†D involves d(D†D)/dA which gets contributions from
     // dD_clov/dA. For U(1), dF_01(x)/dA_mu(s) comes from differentiating
@@ -192,7 +208,7 @@ void fermion_force(const DiracOp& D, const Vec& X,
     // dF_01(x)/dA_mu(s) = (1/4) × d(Im(Q_01(x)))/dA_mu(s)
     // For U(1), d(Im(P))/dA_mu(s) = Re(i × dP/dA_mu(s))
     //   = Re(i × (±i) × P) = ∓Re(P) for forward/backward links.
-    if (D.c_sw != 0.0) {
+    {
         // Precompute σ_3 weight at each site: w(x) = Re(χ_0* X_0 - χ_1* X_1)
         RVec w(lat.V);
         for (int s = 0; s < lat.V; s++)
@@ -470,332 +486,359 @@ void fermion_force(const DiracOp& D, const Vec& X,
     }
 }
 
-// ========================================
-// Even-odd preconditioned HMC functions
-// ========================================
-
-void generate_pseudofermion_eo(const DiracOp& D, std::mt19937& rng, Vec& phi_even) {
-    // Generate η_e ~ N(0,1) on even sites, then φ_e = D̂ η_e
-    Vec eta_e = random_vec(D.lat.ndof2, rng);
-    phi_even.resize(D.lat.ndof2);
-    D.apply_schur(eta_e, phi_even);
-}
-
-FermionActionResult fermion_action_eo(const DiracOp& D, const Vec& phi_even,
-                                       int max_iter, double tol) {
-    // Solve D̂†D̂ x_e = φ_e on even parity
-    OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_schur_DdagD(src, dst); };
-    auto res = cg_solve(A, D.lat.ndof2, phi_even, max_iter, tol);
-
-    // Reconstruct full solution: x_o = -D_oo^{-1} D_oe x_e
-    Vec x_odd;
-    D.reconstruct_odd(res.solution, x_odd);
-
-    // Scatter to full lattice
-    Vec X_full(D.lat.ndof, cx(0));
-    D.scatter_even(res.solution, X_full);
-    D.scatter_odd(x_odd, X_full);
-
-    // Action S_f = Re(φ_e† x_e)
-    // Note: this is the Schur complement action, NOT divided by anything.
-    // The 2-flavour partition function with EO is:
-    //   |det D|² = |det D_ee|² |det D_oo|² |det D̂|²
-    // The pseudofermion action for D̂ is:
-    //   S_pf = φ_e† (D̂†D̂)^{-1} φ_e = Re(φ_e† x_e)
-    double act = std::real(dot(phi_even, res.solution));
-
-    return {act, std::move(X_full), res.iterations};
-}
-
-void fermion_force_eo(const DiracOp& D, const Vec& x_even, const Vec& Y_even,
-                      std::array<RVec, 2>& force) {
-    // Compute dS_eo/dU where S_eo = φ_e†(D̂†D̂)^{-1}φ_e = x_e†D̂†D̂ x_e
-    // Force F(s,μ) = -∂S_eo/∂θ(s,μ) = -2 Re[Y_e†(∂D̂/∂θ)x_e]
-    //
-    // For Wilson (no clover): D̂ = D_ee - D_eo D_oo^{-1} D_oe
-    // ∂D̂/∂θ = -(∂D_eo/∂θ) D_oo^{-1} D_oe - D_eo D_oo^{-1} (∂D_oe/∂θ)
-    //
-    // We need two odd-site intermediates:
-    //   p_o = D_oo^{-1} D_oe x_e     (odd part of the reconstructed solution)
-    //   q_o = D_oo^{-1} D_oe^dag Y_e (adjoint hop of Y_e to odd, with D_oo^{-1})
-    //
-    // For γ₅-hermiticity: D_oe^dag = γ₅ D_eo γ₅
-    // So q_o = D_oo^{-1} γ₅ D_eo γ₅ Y_e
-    //
-    // Then the force at link (s,μ) is:
-    //   F = 2Re[Y_e† (∂D_eo/∂θ) p_o] + 2Re[q_o† (∂D_oe/∂θ) x_e]
-    //     (with appropriate signs from D̂ = D_ee - ...)
-
+// ---------------------------------------------------------------
+//  Common clover plaquette derivative insertion
+//  Accumulates factor × w[x] × dF_01(x)/dA_mu(s) into force
+// ---------------------------------------------------------------
+void clover_deriv_insert(const DiracOp& D, const RVec& w, double factor,
+                         std::array<RVec, 2>& force) {
     const Lattice& lat = D.lat;
-    int V2 = lat.V2;
+    for (int s = 0; s < lat.V; s++) {
+        int sxp = lat.xp(s), sxm = lat.xm(s);
+        int syp = lat.yp(s), sym = lat.ym(s);
+        int sxpym = lat.ym(sxp), sxmyp = lat.yp(sxm);
+        int sxmym = lat.ym(sxm);
+        int sxpyp = lat.yp(sxp);
+
+        // mu=0: forward plaq containing U_0(s)
+        cx P_fwd = D.gauge.U[0][s] * D.gauge.U[1][sxp]
+                 * std::conj(D.gauge.U[0][syp]) * std::conj(D.gauge.U[1][s]);
+        double re_fwd = std::real(P_fwd);
+        double w_fwd = w[s] + w[sxp] + w[sxpyp] + w[syp];
+        // mu=0: backward plaq containing U_0†(s)
+        cx P_bwd = D.gauge.U[0][sym] * D.gauge.U[1][sxpym]
+                 * std::conj(D.gauge.U[0][s]) * std::conj(D.gauge.U[1][sym]);
+        double re_bwd = std::real(P_bwd);
+        double w_bwd = w[sym] + w[sxpym] + w[sxp] + w[s];
+        force[0][s] += factor * (re_fwd * w_fwd - re_bwd * w_bwd);
+
+        // mu=1: forward plaq containing U_1(s)
+        cx P_fwd1 = D.gauge.U[0][sxm] * D.gauge.U[1][s]
+                  * std::conj(D.gauge.U[0][sxmyp]) * std::conj(D.gauge.U[1][sxm]);
+        double re_fwd1 = std::real(P_fwd1);
+        double w_fwd1 = w[sxm] + w[s] + w[syp] + w[sxmyp];
+        // mu=1: backward plaq containing U_1†(s)
+        double re_bwd1 = std::real(P_fwd);  // same plaq as mu=0 forward
+        double w_bwd1 = w[s] + w[sxp] + w[sxpyp] + w[syp];
+        force[1][s] += factor * (re_fwd1 * w_fwd1 - re_bwd1 * w_bwd1);
+    }
+}
+
+// ---------------------------------------------------------------
+//  Hopping-only bilinear force: Re(chi† dD_hop/dA X) per link
+//  Same as fermion_force_bilinear but WITHOUT clover contribution
+// ---------------------------------------------------------------
+void hopping_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
+                            std::array<RVec, 2>& force) {
+    const Lattice& lat = D.lat;
+    force[0].assign(lat.V, 0.0);
+    force[1].assign(lat.V, 0.0);
+    for (int s = 0; s < lat.V; s++) {
+        cx chi_s0 = chi[2*s], chi_s1 = chi[2*s+1];
+        cx x_s0 = X[2*s], x_s1 = X[2*s+1];
+        cx ii(0,1);
+        { int sf = lat.xp(s);
+          cx u = D.gauge.U[0][s]; cx ud = std::conj(u);
+          cx ux0=u*X[2*sf], ux1=u*X[2*sf+1];
+          cx fwd0=D.r*ux0-ux1; cx fwd1=-ux0+D.r*ux1;
+          cx c_fwd = std::conj(chi_s0)*fwd0 + std::conj(chi_s1)*fwd1;
+          cx udx0=ud*x_s0, udx1=ud*x_s1;
+          cx bwd0=D.r*udx0+udx1; cx bwd1=udx0+D.r*udx1;
+          cx c_bwd = std::conj(chi[2*sf])*bwd0 + std::conj(chi[2*sf+1])*bwd1;
+          force[0][s] = std::real(ii*c_bwd - ii*c_fwd); }
+        { int sf = lat.yp(s);
+          cx u = D.gauge.U[1][s]; cx ud = std::conj(u);
+          cx ux0=u*X[2*sf], ux1=u*X[2*sf+1];
+          cx fwd0=D.r*ux0+ii*ux1; cx fwd1=-ii*ux0+D.r*ux1;
+          cx c_fwd = std::conj(chi_s0)*fwd0 + std::conj(chi_s1)*fwd1;
+          cx udx0=ud*x_s0, udx1=ud*x_s1;
+          cx bwd0=D.r*udx0-ii*udx1; cx bwd1=ii*udx0+D.r*udx1;
+          cx c_bwd = std::conj(chi[2*sf])*bwd0 + std::conj(chi[2*sf+1])*bwd1;
+          force[1][s] = std::real(ii*c_bwd - ii*c_fwd); }
+    }
+}
+
+// ---------------------------------------------------------------
+//  Log-det force from det(D_ee) for clover even-odd HMC
+//  F = +2 d(log det(D_ee))/dA
+//  = 2 Σ_{even e} [dC_e/dA × (1/(2r+m+C_e) - 1/(2r+m-C_e))]
+//  Same plaquette structure as clover force, but with logdet weight
+//  only at even sites.
+// ---------------------------------------------------------------
+void logdet_ee_force(const DiracOp& D,
+                     std::array<RVec, 2>& force) {
+    const Lattice& lat = D.lat;
+    force[0].assign(lat.V, 0.0);
+    force[1].assign(lat.V, 0.0);
+    if (D.c_sw == 0.0) return;
+
+    double csw = D.c_sw;
+    double diag = 2.0 * D.r + D.mass;
+
+    // Precompute logdet weight at each site (zero for odd sites)
+    RVec w(lat.V, 0.0);
+    for (int ie = 0; ie < lat.V_half; ie++) {
+        int e = lat.even_sites[ie];
+        double C = 0.5 * csw * D.clover_field[e];
+        // w(e) = -c_sw × C / ((2r+m+C)(2r+m-C))
+        // Factor of 2 for the overall 2× in the force, and ×(c_sw/8) from
+        // the plaquette derivative structure (same as fermion_force_clover).
+        // The fermion_force_clover uses (csw/4) × w, so logdet uses (1/2) × w_logdet.
+        // We precompute the full weight and use the (1/2) factor below.
+        w[e] = -csw * C / ((diag + C) * (diag - C));
+    }
+
+    // Same plaquette enumeration as fermion_force_clover
+    for (int s = 0; s < lat.V; s++) {
+        int sxp = lat.xp(s), sxm = lat.xm(s);
+        int syp = lat.yp(s), sym = lat.ym(s);
+        int sxpym = lat.ym(sxp), sxmyp = lat.yp(sxm);
+        int sxmym = lat.ym(sxm);
+        int sxpyp = lat.yp(sxp);
+
+        // mu=0: forward plaquette
+        cx P_fwd = D.gauge.U[0][s] * D.gauge.U[1][sxp]
+                 * std::conj(D.gauge.U[0][syp]) * std::conj(D.gauge.U[1][s]);
+        double re_P_fwd = std::real(P_fwd);
+        double w_fwd = w[s] + w[sxp] + w[sxpyp] + w[syp];
+
+        // mu=0: backward plaquette
+        cx P_bwd = D.gauge.U[0][sym] * D.gauge.U[1][sxpym]
+                 * std::conj(D.gauge.U[0][s]) * std::conj(D.gauge.U[1][sym]);
+        double re_P_bwd = std::real(P_bwd);
+        double w_bwd = w[sym] + w[sxpym] + w[sxp] + w[s];
+
+        force[0][s] += 0.5 * (re_P_fwd * w_fwd - re_P_bwd * w_bwd);
+
+        // mu=1: forward plaquette (containing U_1(s))
+        cx P_fwd_1 = D.gauge.U[0][sxm] * D.gauge.U[1][s]
+                   * std::conj(D.gauge.U[0][sxmyp]) * std::conj(D.gauge.U[1][sxm]);
+        double re_P_fwd_1 = std::real(P_fwd_1);
+        double w_fwd_1 = w[sxm] + w[s] + w[syp] + w[sxmyp];
+
+        // mu=1: backward plaquette (containing U_1†(s))
+        double re_P_bwd_1 = std::real(P_fwd);  // same plaquette value as mu=0 forward
+        double w_bwd_1 = w[s] + w[sxp] + w[sxpyp] + w[syp];
+
+        force[1][s] += 0.5 * (re_P_fwd_1 * w_fwd_1 - re_P_bwd_1 * w_bwd_1);
+    }
+}
+
+// Compute the clover derivative contribution for e/o Schur complement force.
+// This handles the dD_oo/dA and d(D_ee⁻¹)/dA terms that are missing from
+// the hopping-only eo_fermion_force for clover (c_sw != 0).
+// Also includes the log-det force from -2 log det(D_ee).
+// Accumulates into force (does not zero it).
+static void eo_clover_force(const DiracOp& D, const EvenOddDiracOp& eoD,
+                             const Vec& x_o, const Vec& y_o,
+                             std::array<RVec, 2>& force) {
+    if (D.c_sw == 0.0) return;
+    const Lattice& lat = D.lat;
+    int n_half = 2 * lat.V_half;
+    double csw = D.c_sw;
+    double diag = 2.0 * D.r + D.mass;
+
+    // Precompute vectors needed for the clover weights
+    // a_e = D_ee⁻¹ D_oe x_o (even-site reconstruction)
+    Vec tmp_e(n_half);
+    eoD.apply_oe(x_o, tmp_e);
+    Vec a_e(n_half);
+    eoD.apply_ee_inv(tmp_e, a_e);
+
+    // w_e = D_ee⁻¹ D_eo† y_o = D_ee⁻¹ γ₅ D_oe(γ₅ y_o)
+    Vec g5y(n_half);
+    for (int i = 0; i < lat.V_half; i++) {
+        g5y[2*i]   =  y_o[2*i];
+        g5y[2*i+1] = -y_o[2*i+1];
+    }
+    Vec hop_e(n_half);
+    eoD.apply_oe(g5y, hop_e);
+    Vec g5hop(n_half);
+    for (int i = 0; i < lat.V_half; i++) {
+        g5hop[2*i]   =  hop_e[2*i];
+        g5hop[2*i+1] = -hop_e[2*i+1];
+    }
+    Vec w_e(n_half);
+    eoD.apply_ee_inv(g5hop, w_e);
+
+    // Build the combined clover weight at each site:
+    // - Odd sites: (c_sw/4) × Re(y_o† σ₃ x_o) from dD_oo/dA
+    // - Even sites: -(c_sw/4) × Re(w_e† σ₃ D_ee⁻¹ a_e) from d(D_ee⁻¹)/dA
+    //               + (1/2) × logdet weight from -2 log det(D_ee)
+    RVec w(lat.V, 0.0);
+
+    // Odd-site clover weight (from dD_oo/dA)
+    for (int io = 0; io < lat.V_half; io++) {
+        int s = lat.odd_sites[io];
+        w[s] = (csw / 4.0) * std::real(
+            std::conj(y_o[2*io]) * x_o[2*io] -
+            std::conj(y_o[2*io+1]) * x_o[2*io+1]);
+    }
+
+    // Even-site weights (from d(D_ee⁻¹)/dA + logdet)
+    for (int ie = 0; ie < lat.V_half; ie++) {
+        int e = lat.even_sites[ie];
+        double C = 0.5 * csw * D.clover_field[e];
+        double dee_inv_0 = 1.0 / (diag + C);
+        double dee_inv_1 = 1.0 / (diag - C);
+
+        // d(D_ee⁻¹)/dA term in Schur complement: +D_oe D_ee⁻¹ (dD_ee/dA) D_ee⁻¹ D_eo
+        // The force contribution: +Re(w_e† D_ee⁻¹ σ₃ a_e) × (c_sw/2) × (1/4)
+        // = +(c_sw/4) × Re(w_e₀* dee_inv_0 a_e₀ - w_e₁* dee_inv_1 a_e₁)
+        double w_dee_inv = +(csw / 4.0) * std::real(
+            std::conj(w_e[2*ie]) * dee_inv_0 * a_e[2*ie] -
+            std::conj(w_e[2*ie+1]) * dee_inv_1 * a_e[2*ie+1]);
+
+        // Log-det weight: (1/2) × (-c_sw × C / ((diag+C)(diag-C)))
+        double w_logdet = 0.5 * (-csw * C * dee_inv_0 * dee_inv_1);
+
+        w[e] = w_dee_inv + w_logdet;
+    }
+
+    // Now compute the force using the same plaquette enumeration as fermion_force_clover
+    // but with the combined weight w[] (which has both odd and even contributions)
+    for (int s = 0; s < lat.V; s++) {
+        int sxp = lat.xp(s), sxm = lat.xm(s);
+        int syp = lat.yp(s), sym = lat.ym(s);
+        int sxpym = lat.ym(sxp), sxmyp = lat.yp(sxm);
+        int sxmym = lat.ym(sxm);
+        int sxpyp = lat.yp(sxp);
+
+        // mu=0
+        cx P_fwd = D.gauge.U[0][s] * D.gauge.U[1][sxp]
+                 * std::conj(D.gauge.U[0][syp]) * std::conj(D.gauge.U[1][s]);
+        double re_P_fwd = std::real(P_fwd);
+        double w_fwd = w[s] + w[sxp] + w[sxpyp] + w[syp];
+
+        cx P_bwd = D.gauge.U[0][sym] * D.gauge.U[1][sxpym]
+                 * std::conj(D.gauge.U[0][s]) * std::conj(D.gauge.U[1][sym]);
+        double re_P_bwd = std::real(P_bwd);
+        double w_bwd = w[sym] + w[sxpym] + w[sxp] + w[s];
+
+        force[0][s] += re_P_fwd * w_fwd - re_P_bwd * w_bwd;
+
+        // mu=1
+        cx P_fwd_1 = D.gauge.U[0][sxm] * D.gauge.U[1][s]
+                   * std::conj(D.gauge.U[0][sxmyp]) * std::conj(D.gauge.U[1][sxm]);
+        double re_P_fwd_1 = std::real(P_fwd_1);
+        double w_fwd_1 = w[sxm] + w[s] + w[syp] + w[sxmyp];
+
+        double re_P_bwd_1 = std::real(P_fwd);
+        double w_bwd_1 = w[s] + w[sxp] + w[sxpyp] + w[syp];
+
+        force[1][s] += re_P_fwd_1 * w_fwd_1 - re_P_bwd_1 * w_bwd_1;
+    }
+}
+
+// ---------------------------------------------------------------
+//  Even-odd Schur complement force
+//  Following Chroma eoprec_logdet_linop.h:114-157 and
+//  two_flavor_monomial_w.h:618-633
+//
+//  F = -[schur_deriv(y_o, x_o) + schur_deriv(γ₅y_o, γ₅x_o)] - 2×logdet_force
+//
+//  where schur_deriv computes chi† (dM/dA) psi with 4 terms:
+//    T1: +derivOddOddLinOp     (clover at odd sites)
+//    T2: -derivOddEvenLinOp    (hopping oe derivative)
+//    T3: +derivEvenEvenLinOp   (clover at even sites, chain rule)
+//    T4: -derivEvenOddLinOp    (hopping eo derivative)
+// ---------------------------------------------------------------
+void schur_deriv_plus(const DiracOp& D, const EvenOddDiracOp& eoD,
+                              const Vec& chi_o, const Vec& psi_o,
+                              std::array<RVec, 2>& force) {
+    const Lattice& lat = D.lat;
+    int n_half = 2 * lat.V_half;
+
+    // Pre-compute (Chroma lines 138-147):
+    // tmp2 = A_ee⁻¹ D_eo psi  (even-site reconstruction of psi)
+    Vec tmp1_e(n_half), tmp2(n_half);
+    eoD.apply_oe(psi_o, tmp1_e);
+    eoD.apply_ee_inv(tmp1_e, tmp2);
+
+    // tmp3 = A_ee⁻¹ D_oe† chi  (even-site reconstruction of chi via adjoint)
+    // D_oe† chi = γ₅ D_eo(γ₅ chi) for γ₅-hermitian D
+    Vec g5chi(n_half);
+    for (int i = 0; i < lat.V_half; i++) {
+        g5chi[2*i] = chi_o[2*i]; g5chi[2*i+1] = -chi_o[2*i+1];
+    }
+    Vec hop_e(n_half);
+    eoD.apply_oe(g5chi, hop_e);
+    Vec g5hop(n_half);
+    for (int i = 0; i < lat.V_half; i++) {
+        g5hop[2*i] = hop_e[2*i]; g5hop[2*i+1] = -hop_e[2*i+1];
+    }
+    Vec tmp3(n_half);
+    eoD.apply_ee_inv(g5hop, tmp3);
+
+    // Terms 1 & 3: clover diagonal derivatives (only for c_sw != 0)
+    if (D.c_sw != 0.0) {
+        RVec w(lat.V, 0.0);
+        // Term 1: +derivOddOddLinOp — weight at odd sites = Re(chi† σ₃ psi)
+        for (int io = 0; io < lat.V_half; io++) {
+            int s = lat.odd_sites[io];
+            w[s] = std::real(std::conj(chi_o[2*io]) * psi_o[2*io]
+                           - std::conj(chi_o[2*io+1]) * psi_o[2*io+1]);
+        }
+        // Term 3: +derivEvenEvenLinOp — weight at even sites = Re(tmp3† σ₃ tmp2)
+        for (int ie = 0; ie < lat.V_half; ie++) {
+            int e = lat.even_sites[ie];
+            w[e] = std::real(std::conj(tmp3[2*ie]) * tmp2[2*ie]
+                           - std::conj(tmp3[2*ie+1]) * tmp2[2*ie+1]);
+        }
+        // Insert: factor = (c_sw/2) × (1/4) = c_sw/8
+        // dA/dU = (c_sw/2) σ₃ dF_01/dA, and dF_01/dA = (1/4) d(Im(Q))/dA
+        clover_deriv_insert(D, w, D.c_sw / 8.0, force);
+    }
+
+    // Terms 2 & 4: hopping derivatives
+    // T2: -chi† D'_oe tmp2  → hopping force of chi_full(odd=chi, even=tmp3) × psi_full(even=tmp2, odd=psi)
+    // T4: -tmp3† D'_eo psi  → same hopping force (scatter + hopping_force)
+    Vec chi_full = eoD.scatter(tmp3, chi_o);
+    Vec psi_full = eoD.scatter(tmp2, psi_o);
+    std::array<RVec, 2> ff_hop;
+    hopping_force_bilinear(D, chi_full, psi_full, ff_hop);
+    // hopping_force_bilinear gives 2× because it sums fwd+bwd at each link.
+    // Terms 2&4 each contribute once, so divide by 2.
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++)
+            force[mu][s] -= 0.5 * ff_hop[mu][s];
+}
+
+void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
+                      const Vec& x_o, const Vec& y_o,
+                      std::array<RVec, 2>& force) {
+    const Lattice& lat = D.lat;
+    int n_half = 2 * lat.V_half;
     force[0].assign(lat.V, 0.0);
     force[1].assign(lat.V, 0.0);
 
-    // Compute p_o = D_oo^{-1} D_oe x_e
-    Vec D_oe_x;
-    D.apply_oe(x_even, D_oe_x);
-    Vec p_odd(lat.ndof2);
-    D.invert_diag(D_oe_x, p_odd, false);
-
-    // Compute q_o = D_oo^{-1} γ₅ D_eo γ₅ Y_e
-    // First: g5_Y = γ₅ Y_e
-    Vec g5_Y(lat.ndof2);
-    for (int h = 0; h < V2; h++) { g5_Y[2*h] = Y_even[2*h]; g5_Y[2*h+1] = -Y_even[2*h+1]; }
-    // D_eo applied to g5_Y (this treats g5_Y as an odd vector, producing even)
-    // Wait — D_eo goes odd→even. We need D_eo^dag which maps even→odd.
-    // D_eo^dag = γ₅_o D_oe γ₅_e. So: q_o = D_oo^{-1} γ₅ D_oe γ₅ Y_e
-    // But D_oe maps even→odd. So D_oe(γ₅ Y_e) gives odd, then γ₅, then D_oo^{-1}.
-    Vec D_oe_g5Y;
-    D.apply_oe(g5_Y, D_oe_g5Y);
-    // Apply γ₅ to the odd result
-    Vec g5_D_oe_g5Y(lat.ndof2);
-    for (int h = 0; h < V2; h++) { g5_D_oe_g5Y[2*h] = D_oe_g5Y[2*h]; g5_D_oe_g5Y[2*h+1] = -D_oe_g5Y[2*h+1]; }
-    Vec q_odd(lat.ndof2);
-    D.invert_diag(g5_D_oe_g5Y, q_odd, false);
-
-    // Now the force. For each link (s,μ), the D_eo/D_oe hopping terms give:
+    // Chroma two_flavor_monomial_w.h:618-633:
+    // F = -[M.deriv(X, Y, MINUS) + M.deriv(Y, X, PLUS)]
     //
-    // Term 1: -Y_e†(∂D_eo/∂θ)p_o  (the ∂D_eo/∂θ term in dD̂/dθ, with overall - from D̂ = D_ee - ...)
-    //   This involves: Y_e at even site, p_o at odd neighbor (or vice versa)
-    //   ∂D_eo/∂θ(s,μ) = derivative of the hop from odd s+μ to even s through link U_μ(s)
+    // M.deriv(chi, psi, PLUS) = chi† dM/dA psi  → schur_deriv_plus(chi, psi)
+    // M.deriv(chi, psi, MINUS) = chi† dM†/dA psi
+    //   For γ₅-hermitian M: M† = γ₅ M γ₅
+    //   chi† dM†/dA psi = chi† γ₅ dM/dA γ₅ psi = schur_deriv_plus(γ₅chi, γ₅psi)
+
+    // Force = -dS/dA where S = φ†(M†M)⁻¹φ
+    // dS/dA = -x†d(M†M)/dA x = -2Re(y†dM/dA x) where y = Mx
+    // So force = -dS/dA = +2Re(y†dM/dA x)
     //
-    // Term 2: -q_o†(∂D_oe/∂θ)x_e  (the D_eo D_oo^{-1} ∂D_oe/∂θ term)
-    //   This involves: q_o at odd site, x_e at even neighbor
-    //
-    // The outer product structure is IDENTICAL to the full fermion_force,
-    // but using (Y_e, q_o) as "chi" and (x_e, p_o) as "X",
-    // with the fields living on their respective parities.
-    //
-    // Actually, let me construct full-lattice vectors:
-    //   X_full = (x_e on even, p_o on odd)
-    //   chi_full = (Y_e on even, q_o on odd)
-    // Then the force is the same outer product as fermion_force(D, X_full),
-    // but with chi_full instead of D*X_full!
-
-    // Scatter to full lattice
-    Vec X_full(lat.ndof, cx(0));
-    Vec chi_full(lat.ndof, cx(0));
-    for (int h = 0; h < V2; h++) {
-        int se = lat.even_sites[h];
-        X_full[2*se] = x_even[2*h]; X_full[2*se+1] = x_even[2*h+1];
-        chi_full[2*se] = Y_even[2*h]; chi_full[2*se+1] = Y_even[2*h+1];
-
-        int so = lat.odd_sites[h];
-        X_full[2*so] = p_odd[2*h]; X_full[2*so+1] = p_odd[2*h+1];
-        chi_full[2*so] = q_odd[2*h]; chi_full[2*so+1] = q_odd[2*h+1];
-    }
-
-    // Now use the SAME outer product structure as fermion_force,
-    // but with chi_full instead of D*X_full.
-    // The overall sign is NEGATIVE because D̂ = D_ee - D_eo D_oo^{-1} D_oe,
-    // and the outer products compute d(D_eo D_oo^{-1} D_oe)/dθ (without the minus).
-    // The force F = -∂S/∂θ = -2Re[Y†(∂D̂/∂θ)x] = +2Re[Y†(d(hop chain)/dθ)x].
-    // But fermion_force convention returns -∂S/∂θ directly, so we negate.
-    cx ii(0,1);
-    for (int s = 0; s < lat.V; s++) {
-        cx chi_s0 = chi_full[2*s], chi_s1 = chi_full[2*s+1];
-        cx x_s0 = X_full[2*s], x_s1 = X_full[2*s+1];
-
-        // mu=0 (x-direction)
-        {
-            int sf = lat.xp(s);
-            cx u = D.gauge.U[0][s];
-            cx ud = std::conj(u);
-
-            cx ux0 = u * X_full[2*sf], ux1 = u * X_full[2*sf+1];
-            cx fwd0 = D.r * ux0 - ux1;
-            cx fwd1 = -ux0 + D.r * ux1;
-            cx c_fwd = std::conj(chi_s0) * fwd0 + std::conj(chi_s1) * fwd1;
-
-            cx udx0 = ud * x_s0, udx1 = ud * x_s1;
-            cx bwd0 = D.r * udx0 + udx1;
-            cx bwd1 = udx0 + D.r * udx1;
-            cx c_bwd = std::conj(chi_full[2*sf]) * bwd0 + std::conj(chi_full[2*sf+1]) * bwd1;
-
-            force[0][s] = std::real(ii * c_bwd - ii * c_fwd);
-        }
-
-        // mu=1 (y-direction)
-        {
-            int sf = lat.yp(s);
-            cx u = D.gauge.U[1][s];
-            cx ud = std::conj(u);
-
-            cx ux0 = u * X_full[2*sf], ux1 = u * X_full[2*sf+1];
-            cx fwd0 = D.r * ux0 + ii * ux1;
-            cx fwd1 = -ii * ux0 + D.r * ux1;
-            cx c_fwd = std::conj(chi_s0) * fwd0 + std::conj(chi_s1) * fwd1;
-
-            cx udx0 = ud * x_s0, udx1 = ud * x_s1;
-            cx bwd0 = D.r * udx0 - ii * udx1;
-            cx bwd1 = ii * udx0 + D.r * udx1;
-            cx c_bwd = std::conj(chi_full[2*sf]) * bwd0 + std::conj(chi_full[2*sf+1]) * bwd1;
-
-            force[1][s] = std::real(ii * c_bwd - ii * c_fwd);
-        }
-    }
-
-    // Apply overall minus sign: D̂ = D_ee - (hop chain), so ∂D̂/∂θ = -∂(hop chain)/∂θ.
-    // The outer products above compute +∂(hop chain)/∂θ contribution.
-    // F = -∂S/∂θ = -2Re[Y†(∂D̂/∂θ)x] = +2Re[Y†(∂(hop chain)/∂θ)x] = what we computed above.
-    // But wait — the non-EO fermion_force also computes F = -∂S/∂θ and returns positive values
-    // that match -(S+-S-)/(2eps). Let me check the sign convention more carefully.
-    //
-    // Actually, the numerical force computes: ff_num = -(S+ - S-)/(2eps) = -∂S/∂θ.
-    // The analytical force should equal ff_num. Currently ff_ana = -ff_num.
-    // So negate:
+    // d(x†M†Mx)/dA = 2Re(y†dM/dA x) where y = Mx.
+    // schur_deriv_plus gives Re(y†dM/dA x), so multiply by 2.
+    schur_deriv_plus(D, eoD, y_o, x_o, force);
     for (int mu = 0; mu < 2; mu++)
         for (int s = 0; s < lat.V; s++)
-            force[mu][s] = -force[mu][s];
+            force[mu][s] *= 2.0;
 
-    // Note: no clover force term here — for clover, dD_oo/dU ≠ 0
-    // and would require additional sigma-trace contributions.
-}
-
-void verify_forces_eo(const GaugeField& g, double beta, double mass, double wilson_r,
-                      int max_iter, double tol, double c_sw) {
-    const Lattice& lat = g.lat;
-    double eps = 1e-5;
-    std::mt19937 rng(12345);
-
-    DiracOp D0(lat, g, mass, wilson_r, c_sw);
-    Vec phi_e;
-    generate_pseudofermion_eo(D0, rng, phi_e);
-
-    // Solve D̂†D̂ x_e = phi_e to get x_even, then compute Y_e = D̂ x_e
-    OpApply A0 = [&D0](const Vec& src, Vec& dst) { D0.apply_schur_DdagD(src, dst); };
-    auto cg_res = cg_solve(A0, lat.ndof2, phi_e, max_iter, tol);
-    Vec x_even = cg_res.solution;
-    Vec Y_even(lat.ndof2);
-    D0.apply_schur(x_even, Y_even);
-
-    // Analytical EO force
-    std::array<RVec, 2> ff_ana;
-    fermion_force_eo(D0, x_even, Y_even, ff_ana);
-
-    std::array<RVec, 2> gf_ana;
-    gauge_force(g, beta, gf_ana);
-
-    double max_gf_err = 0, max_ff_err = 0;
-    double max_gf_val = 0, max_ff_val = 0;
-
-    std::cout << "\n=== EO Force Verification ===\n";
-    for (int test = 0; test < 10; test++) {
-        int mu = test % 2;
-        int s = test * 7 % lat.V;
-
-        GaugeField g_plus(lat); g_plus.U[0] = g.U[0]; g_plus.U[1] = g.U[1];
-        g_plus.U[mu][s] *= std::exp(cx(0, eps));
-        GaugeField g_minus(lat); g_minus.U[0] = g.U[0]; g_minus.U[1] = g.U[1];
-        g_minus.U[mu][s] *= std::exp(cx(0, -eps));
-
-        // Numerical gauge force
-        double sg_p = gauge_action(g_plus, beta), sg_m = gauge_action(g_minus, beta);
-        double gf_num = -(sg_p - sg_m) / (2 * eps);
-        double gf_err = std::abs(gf_ana[mu][s] - gf_num);
-        max_gf_err = std::max(max_gf_err, gf_err);
-        max_gf_val = std::max(max_gf_val, std::abs(gf_ana[mu][s]));
-
-        // Numerical fermion force (using EO action)
-        DiracOp Dp(lat, g_plus, mass, wilson_r, c_sw);
-        DiracOp Dm(lat, g_minus, mass, wilson_r, c_sw);
-        auto rp = fermion_action_eo(Dp, phi_e, max_iter, tol);
-        auto rm = fermion_action_eo(Dm, phi_e, max_iter, tol);
-        double ff_num = -(rp.action - rm.action) / (2 * eps);
-
-        double ff_err = std::abs(ff_ana[mu][s] - ff_num);
-        max_ff_err = std::max(max_ff_err, ff_err);
-        max_ff_val = std::max(max_ff_val, std::abs(ff_ana[mu][s]));
-
-        std::cout << "  link(" << mu << "," << s << "): "
-                  << "gf_ana=" << std::setw(10) << gf_ana[mu][s]
-                  << " gf_num=" << std::setw(10) << gf_num
-                  << " | ff_ana=" << std::setw(10) << ff_ana[mu][s]
-                  << " ff_num=" << std::setw(10) << ff_num << "\n";
-    }
-    std::cout << "EO Gauge force: max_err=" << max_gf_err
-              << " rel=" << max_gf_err / std::max(max_gf_val, 1e-30) << "\n";
-    std::cout << "EO Fermion force: max_err=" << max_ff_err
-              << " rel=" << max_ff_err / std::max(max_ff_val, 1e-30) << "\n";
-}
-
-HMCResult hmc_trajectory_eo(
-    GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
-    const HMCParams& params, std::mt19937& rng)
-{
-    double dt = params.tau / params.n_steps;
-    double c_sw = params.c_sw;
-    int total_cg = 0;
-
-    GaugeField gauge_old(lat);
-    gauge_old.U[0] = gauge.U[0]; gauge_old.U[1] = gauge.U[1];
-
-    MomentumField mom(lat);
-    mom.randomise(rng);
-
-    // Generate EO pseudofermion
-    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
-    Vec phi_e;
-    generate_pseudofermion_eo(D_init, rng, phi_e);
-
-    // Initial Hamiltonian
-    double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
-    { auto res = fermion_action_eo(D_init, phi_e, params.cg_maxiter, params.cg_tol);
-      H_init += res.action; total_cg += res.cg_iters; }
-
-    // Leapfrog: half-kick → [drift → kick]^{N-1} → drift → half-kick
-    auto kick = [&](double step) {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
-        std::array<RVec, 2> gf, ff;
-        gauge_force(gauge, params.beta, gf);
-
-        // EO CG solve
-        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_schur_DdagD(src, dst); };
-        auto cg_res = cg_solve(A, lat.ndof2, phi_e, params.cg_maxiter, params.cg_tol);
-        total_cg += cg_res.iterations;
-
-        // Compute Y_e = D̂ x_e for the EO force
-        Vec Y_e(lat.ndof2);
-        D.apply_schur(cg_res.solution, Y_e);
-
-        // EO fermion force
-        fermion_force_eo(D, cg_res.solution, Y_e, ff);
-
+    // Log-det: +2 × derivLogDetEvenEven (in our force convention: -d(-2 log det)/dA = +2 d(log det)/dA)
+    if (D.c_sw != 0.0) {
+        std::array<RVec, 2> ff_logdet;
+        logdet_ee_force(D, ff_logdet);
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
-                mom.pi[mu][s] += step * (gf[mu][s] + ff[mu][s]);
-    };
-    auto drift = [&](double step) {
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                gauge.U[mu][s] *= std::exp(cx(0, step * mom.pi[mu][s]));
-    };
-
-    kick(0.5 * dt);
-    for (int step = 0; step < params.n_steps - 1; step++) {
-        drift(dt);
-        kick(dt);
+                force[mu][s] += ff_logdet[mu][s];
     }
-    drift(dt);
-    kick(0.5 * dt);
-
-    // Final Hamiltonian
-    double H_final = mom.kinetic_energy() + gauge_action(gauge, params.beta);
-    { DiracOp D(lat, gauge, mass, wilson_r, c_sw);
-      auto res = fermion_action_eo(D, phi_e, params.cg_maxiter, params.cg_tol);
-      H_final += res.action; total_cg += res.cg_iters; }
-
-    double dH = H_final - H_init;
-
-    // Metropolis
-    std::uniform_real_distribution<double> udist(0.0, 1.0);
-    bool accepted = (udist(rng) < std::exp(-dH));
-    if (!accepted) { gauge.U[0] = gauge_old.U[0]; gauge.U[1] = gauge_old.U[1]; }
-
-    static int n_acc = 0, n_tot = 0;
-    n_tot++; if (accepted) n_acc++;
-
-    return {accepted, dH, (double)n_acc / n_tot, total_cg};
 }
 
 void verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
@@ -888,6 +931,86 @@ HMCResult hmc_trajectory(
     MomentumField mom(lat);
     mom.randomise(rng);
 
+    // === Even-Odd preconditioned path ===
+    // Uses Schur complement M†M on odd sites for CG, with dedicated e/o force
+    // For clover: includes log-det and clover diagonal derivative terms
+    if (params.use_eo) {
+        int n_half = 2 * lat.V_half;
+
+        // Generate pseudofermion in Schur space
+        DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
+        EvenOddDiracOp eoD_init(D_init);
+        Vec phi_o = eoD_init.generate_pseudofermion_eo(rng);
+
+        // Solve + force helper
+        auto solve_and_force = [&](std::array<RVec, 2>& ff) {
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            EvenOddDiracOp eoD(D);
+            OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
+            auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+            total_cg += res.iterations;
+            Vec y_o(n_half);
+            eoD.apply_schur(res.solution, y_o);
+            eo_fermion_force(D, eoD, res.solution, y_o, ff);
+            return res;
+        };
+
+        // Compute H with e/o action: φ_o†x_o - 2 log det(D_ee) (for clover)
+        auto compute_H = [&]() -> double {
+            double H = mom.kinetic_energy() + gauge_action(gauge, params.beta);
+            DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+            EvenOddDiracOp eoD(D);
+            OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
+            auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+            total_cg += res.iterations;
+            H += std::real(dot(phi_o, res.solution));
+            if (c_sw != 0.0) H -= 2.0 * eoD.log_det_ee();
+            return H;
+        };
+
+        double H_init = compute_H();
+
+        // Leapfrog: half-step, full steps, half-step
+        std::array<RVec, 2> gf, ff;
+        gauge_force(gauge, params.beta, gf);
+        auto res0 = solve_and_force(ff);
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
+
+        for (int step = 0; step < params.n_steps - 1; step++) {
+            for (int mu = 0; mu < 2; mu++)
+                for (int s = 0; s < lat.V; s++)
+                    gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+            gauge_force(gauge, params.beta, gf);
+            solve_and_force(ff);
+            for (int mu = 0; mu < 2; mu++)
+                for (int s = 0; s < lat.V; s++)
+                    mom.pi[mu][s] += dt * (gf[mu][s] + ff[mu][s]);
+        }
+
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+
+        gauge_force(gauge, params.beta, gf);
+        solve_and_force(ff);
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
+
+        double H_final = compute_H();
+        double dH = H_final - H_init;
+        std::uniform_real_distribution<double> uniform(0.0, 1.0);
+        bool accept = (dH < 0) || (uniform(rng) < std::exp(-dH));
+        if (!accept) {
+            gauge.U[0] = gauge_old.U[0];
+            gauge.U[1] = gauge_old.U[1];
+        }
+        return {accept, dH, 0.0, total_cg};
+    }
+
+    // === Full-lattice path (original) ===
     DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
     Vec phi;
     generate_pseudofermion(D_init, rng, phi);
@@ -1295,12 +1418,32 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     mom.randomise(rng);
 
     DiracOp D_init(lat, gauge, mass, wilson_r, c_sw);
-    Vec phi;
-    generate_pseudofermion(D_init, rng, phi);
+    bool eo = params.use_eo;
+    int n_half = 2 * lat.V_half;
+
+    // Pseudofermion: full lattice or Schur space
+    Vec phi;           // full-lattice pseudofermion (used by inner force and non-eo path)
+    Vec phi_o;         // Schur pseudofermion (e/o path)
+    if (eo) {
+        EvenOddDiracOp eoD_init(D_init);
+        phi_o = eoD_init.generate_pseudofermion_eo(rng);
+        // Also need full-lattice phi for the inner (coarse lowmode) force.
+        // Generate it separately for the inner force:
+        generate_pseudofermion(D_init, rng, phi);
+    } else {
+        generate_pseudofermion(D_init, rng, phi);
+    }
 
     // --- Initial Hamiltonian ---
     double H_init = mom.kinetic_energy() + gauge_action(gauge, params.beta);
-    {
+    if (eo) {
+        EvenOddDiracOp eoD(D_init);
+        OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
+        auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+        H_init += std::real(dot(phi_o, res.solution));
+        if (c_sw != 0.0) H_init -= 2.0 * eoD.log_det_ee();
+        total_cg += res.iterations;
+    } else {
         OpApply A = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
         auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
                                      params.cg_maxiter, params.cg_tol);
@@ -1315,11 +1458,26 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         std::array<RVec, 2> gf, ff_full, fl;
         gauge_force(gauge, params.beta, gf);
-        OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
-        auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
-                                     params.cg_maxiter, params.cg_tol);
-        total_cg += res.iterations;
-        fermion_force(D, res.solution, ff_full);
+
+        if (eo) {
+            // E/O CG solve + e/o force
+            EvenOddDiracOp eoD(D);
+            OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
+            auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+            total_cg += res.iterations;
+            Vec y_o(n_half);
+            eoD.apply_schur(res.solution, y_o);
+            eo_fermion_force(D, eoD, res.solution, y_o, ff_full);
+            // eo_fermion_force now includes clover + logdet terms internally
+        } else {
+            OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
+            auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
+                                         params.cg_maxiter, params.cg_tol);
+            total_cg += res.iterations;
+            fermion_force(D, res.solution, ff_full);
+        }
+
+        // Inner force (coarse deflation) — always on full lattice
         coarse_lowmode_force(D, cdefl, P, phi, fl, params.inner_smooth);
         f_out[0].resize(lat.V);
         f_out[1].resize(lat.V);
@@ -1491,7 +1649,15 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
     // --- Final Hamiltonian ---
     double H_final = mom.kinetic_energy() + gauge_action(gauge, params.beta);
-    {
+    if (eo) {
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw);
+        EvenOddDiracOp eoD(D);
+        OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
+        auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+        H_final += std::real(dot(phi_o, res.solution));
+        if (c_sw != 0.0) H_final -= 2.0 * eoD.log_det_ee();
+        total_cg += res.iterations;
+    } else {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw);
         OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
         auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,

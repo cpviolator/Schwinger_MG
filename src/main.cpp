@@ -55,6 +55,8 @@ void print_usage(const char* prog) {
         << "  --maxiter <int>       Max solver iterations             [300]\n"
         << "\n"
         << "=== Standard HMC ===\n"
+        << "  --even-odd            Enable even-odd (Schur complement) preconditioning\n"
+        << "\n"
         << "  --hmc                 Run standard HMC\n"
         << "  --hmc-traj <int>      Number of trajectories            [100]\n"
         << "  --hmc-tau <float>     Trajectory length                 [1.0]\n"
@@ -98,51 +100,61 @@ void print_usage(const char* prog) {
         << "======================= EXAMPLES =======================\n"
         << "\n"
         << "--- Basic MG Solver ---\n"
-        << "  " << prog << " -L 32 --mg-levels 2                    # 2-level W-cycle\n"
-        << "  " << prog << " -L 64 --mg-levels 3 -k 8 -t 8          # 3-level MG, 8 threads\n"
-        << "  " << prog << " -L 32 --mg-levels 2 --csw 1.0           # Wilson-clover MG\n"
+        << "  " << prog << " -L 16 --mg-levels 2\n"
+        << "  " << prog << " -L 32 --mg-levels 2 --csw 1.0\n"
+        << "  " << prog << " -L 32 --mg-levels 3 -k 8\n"
         << "\n"
-        << "--- Standard HMC ---\n"
-        << "  " << prog << " --hmc -L 16 --hmc-beta 2.0 --hmc-traj 100\n"
-        << "  " << prog << " --hmc -L 32 --csw 1.0 --hmc-beta 2.0    # clover HMC\n"
-        << "  " << prog << " --hmc -L 32 --hmc-therm 50 --hmc-save-every 5\n"
+        << "--- Standard HMC (Wilson) ---\n"
+        << "  " << prog << " --hmc -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10\n"
         << "\n"
-        << "--- MG Multi-Timescale HMC (Leapfrog outer) ---\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --mg-levels 2 -b 4 -k 4 \\\n"
-        << "         --hmc-n-outer 20 --hmc-n-inner 2 --hmc-n-defl 16 --hmc-traj 20\n"
+        << "--- Standard HMC (Wilson-Clover) ---\n"
+        << "  " << prog << " --hmc --csw 1.0 -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10\n"
         << "\n"
-        << "--- MG Multi-Timescale HMC (Omelyan outer) ---\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-omelyan --mg-levels 2 \\\n"
-        << "         -b 4 -k 4 --hmc-n-outer 10 --hmc-n-inner 2 --hmc-n-defl 16\n"
+        << "--- Standard HMC with Even-Odd ---\n"
+        << "  " << prog << " --hmc --even-odd -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10\n"
+        << "\n"
+        << "--- Standard HMC with Clover + Even-Odd ---\n"
+        << "  " << prog << " --hmc --even-odd --csw 1.0 -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10\n"
+        << "\n"
+        << "--- MG Multi-Timescale HMC (Leapfrog) ---\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 10 --hmc-n-inner 2 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10\n"
+        << "\n"
+        << "--- MG Multi-Timescale HMC (Omelyan) ---\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-omelyan --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 5 --hmc-n-inner 2 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10\n"
         << "\n"
         << "--- Nested Force-Gradient Integrator (MILC-style) ---\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 \\\n"
-        << "         -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 16 --hmc-traj 20\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10\n"
         << "\n"
         << "--- Nested FGI with Wilson-Clover ---\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-force-gradient --csw 1.0 \\\n"
-        << "         --mg-levels 2 -b 4 -k 4 --hmc-n-outer 7 --hmc-n-inner 3 \\\n"
-        << "         --hmc-n-defl 16 --hmc-traj 20 --hmc-beta 2.0\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-force-gradient --csw 1.0"
+        << " --mg-levels 2 -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10\n"
         << "\n"
         << "--- Nested FGI with Periodic Deflation Refresh ---\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 \\\n"
-        << "         -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 5 --hmc-n-defl 16 \\\n"
-        << "         --hmc-defl-refresh 3 --hmc-traj 20\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-force-gradient --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 5 --hmc-n-inner 5 --hmc-n-defl 8 --hmc-defl-refresh 3 --hmc-traj 10 --hmc-therm 10\n"
         << "\n"
-        << "--- Reversibility Test (all integrators) ---\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-revtest --mg-levels 2 \\\n"
-        << "         -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 16\n"
-        << "  " << prog << " -L 32 --hmc-mg-multiscale --hmc-revtest --csw 1.0 \\\n"
-        << "         --mg-levels 2 -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3\n"
+        << "--- MG Multi-Timescale with Even-Odd ---\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --even-odd --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 10 --hmc-n-inner 2 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10\n"
+        << "\n"
+        << "--- MG FGI with Even-Odd ---\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-force-gradient --even-odd"
+        << " --mg-levels 2 -b 4 -k 4 --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8 --hmc-traj 10 --hmc-therm 10\n"
+        << "\n"
+        << "--- Reversibility Test (Wilson) ---\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-revtest --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8\n"
+        << "\n"
+        << "--- Reversibility Test (Wilson-Clover) ---\n"
+        << "  " << prog << " -L 16 --hmc-mg-multiscale --hmc-revtest --csw 1.0 --mg-levels 2 -b 4 -k 4"
+        << " --hmc-n-outer 5 --hmc-n-inner 3 --hmc-n-defl 8\n"
         << "\n"
         << "--- Sparse Coarse Eigenvector Evolution Study ---\n"
-        << "  " << prog << " -L 128 --test-sparse-coarse --mg-levels 2 -b 4 -k 4 \\\n"
-        << "         --n-defl 16 -n 50 -e 0.02 --hmc-therm 20 --hmc-beta 2.0\n"
-        << "\n"
-        << "--- Thermalise and Save Gauge Configuration ---\n"
-        << "  " << prog << " -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4 \\\n"
-        << "         --hmc-therm 50 --hmc-beta 2.0 --n-defl 16 -n 1 -e 0.02\n"
-        << "  (saves to gauge_L32_b2.00_t50.bin, auto-loaded by subsequent runs)\n";
+        << "  " << prog << " -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4"
+        << " --n-defl 8 -n 5 -e 0.02\n";
 }
 
 int main(int argc, char** argv) {
@@ -181,6 +193,7 @@ int main(int argc, char** argv) {
     bool   hmc_revtest = false;
     bool   hmc_eo = false;         // run EO-preconditioned HMC
     int    hmc_defl_refresh = 0;
+    bool   use_eo = false;
     int    hmc_n_outer = 10;
     int    hmc_n_inner = 5;
     int    hmc_n_defl  = 8;
@@ -239,6 +252,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-revtest")) hmc_revtest = true;
         else if (match("--hmc-eo")) hmc_eo = true;
         else if (match("--hmc-defl-refresh")) hmc_defl_refresh = std::atoi(argv[++i]);
+        else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
         else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
         else if (match("--hmc-n-defl")) hmc_n_defl = next_int();
@@ -328,6 +342,8 @@ int main(int argc, char** argv) {
         params.cg_maxiter = max_iter;
         params.cg_tol = tol;
         params.use_mg = false;
+        params.c_sw = c_sw;
+        params.use_eo = use_eo;
 
         int n_accept = 0;
         int total_traj = hmc_therm + hmc_traj;
@@ -504,6 +520,7 @@ int main(int argc, char** argv) {
         std_params.cg_tol = tol;
         std_params.use_mg = false;
         std_params.c_sw = c_sw;
+        std_params.use_eo = use_eo;
 
         MultiScaleParams ms_params;
         ms_params.beta = hmc_beta;
@@ -513,6 +530,7 @@ int main(int argc, char** argv) {
         ms_params.cg_maxiter = max_iter;
         ms_params.cg_tol = tol;
         ms_params.c_sw = c_sw;
+        ms_params.use_eo = use_eo;
 
         int std_accept = 0, ms_accept = 0;
         double std_dH_sum = 0, ms_dH_sum = 0;
@@ -717,6 +735,7 @@ int main(int argc, char** argv) {
         std_params.cg_tol = tol;
         std_params.use_mg = false;
         std_params.c_sw = c_sw;
+        std_params.use_eo = use_eo;
 
         // Multi-timescale
         MGMultiScaleParams ms_params;
@@ -727,6 +746,7 @@ int main(int argc, char** argv) {
         ms_params.cg_maxiter = max_iter;
         ms_params.cg_tol = tol;
         ms_params.c_sw = c_sw;
+        ms_params.use_eo = use_eo;
         if (hmc_omelyan) ms_params.outer_type = OuterIntegrator::Omelyan;
         if (hmc_force_gradient) ms_params.outer_type = OuterIntegrator::FGI;
         ms_params.defl_refresh = hmc_defl_refresh;
