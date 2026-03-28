@@ -62,9 +62,36 @@ FermionActionResult fermion_action_precond(
     const std::function<Vec(const Vec&)>& precond,
     int max_iter, double tol);
 
-// Fermion force
+// Fermion force: F = Re(chi† dD/dA X)
+// Standard version: chi = D*X (computed internally)
 void fermion_force(const DiracOp& D, const Vec& X,
                    std::array<RVec, 2>& force);
+// Bilinear version: chi provided explicitly (for even-odd force)
+void fermion_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
+                            std::array<RVec, 2>& force);
+// Clover force contribution (called by fermion_force_bilinear when c_sw != 0)
+void fermion_force_clover(const DiracOp& D, const Vec& chi, const Vec& X,
+                          std::array<RVec, 2>& force);
+
+// Log-det force from det(D_ee) for clover even-odd HMC
+// F = +2 d(log det(D_ee))/dA (only for c_sw != 0, only even sites contribute)
+void logdet_ee_force(const DiracOp& D,
+                     std::array<RVec, 2>& force);
+
+// Clover plaquette derivative insertion: accumulates weight × dF_01/dA into force.
+// Used by fermion_force_clover, logdet_ee_force, and schur_deriv.
+void clover_deriv_insert(const DiracOp& D, const RVec& w, double factor,
+                         std::array<RVec, 2>& force);
+
+// Hopping-only bilinear force: Re(chi† dD_hop/dA X) without clover contribution
+void hopping_force_bilinear(const DiracOp& D, const Vec& chi, const Vec& X,
+                            std::array<RVec, 2>& force);
+
+// Even-odd Schur complement force: F = -dS_eo/dA where S_eo = φ_o†(M†M)⁻¹φ_o
+// x_o = CG solution, y_o = M x_o
+void eo_fermion_force(const DiracOp& D, const EvenOddDiracOp& eoD,
+                      const Vec& x_o, const Vec& y_o,
+                      std::array<RVec, 2>& force);
 
 // Force verification
 void verify_forces(const GaugeField& g, double beta, double mass, double wilson_r,
@@ -82,6 +109,7 @@ struct HMCParams {
     double cg_tol;
     bool use_mg;
     double c_sw = 0.0;
+    bool use_eo = false;  // even-odd preconditioning
 };
 
 struct HMCResult {
@@ -134,6 +162,7 @@ struct MultiScaleParams {
     int cg_maxiter = 500;
     double cg_tol = 1e-10;
     double c_sw = 0.0;
+    bool use_eo = false;
 };
 
 struct MultiScaleResult {
@@ -200,6 +229,7 @@ struct MGMultiScaleParams {
     OuterIntegrator outer_type = OuterIntegrator::Leapfrog;
     int defl_refresh = 0;   // refresh coarse deflation every N inner steps (0=never)
     double c_sw = 0.0;     // clover coefficient
+    bool use_eo = false;   // even-odd preconditioning
 };
 
 struct MGMultiScaleResult {
