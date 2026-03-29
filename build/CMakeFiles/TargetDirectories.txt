@@ -1,4 +1,0 @@
-/Users/deanhowarth/HMC_EVOL/git_repo/build/CMakeFiles/schwinger.dir
-/Users/deanhowarth/HMC_EVOL/git_repo/build/CMakeFiles/test.dir
-/Users/deanhowarth/HMC_EVOL/git_repo/build/CMakeFiles/edit_cache.dir
-/Users/deanhowarth/HMC_EVOL/git_repo/build/CMakeFiles/rebuild_cache.dir
