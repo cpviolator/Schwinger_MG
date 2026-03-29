@@ -1558,7 +1558,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     CoarseDeflState& cdefl,
     Prolongator& P,
     std::function<Vec(const Vec&)>& mg_precond,
-    std::mt19937& rng)
+    std::mt19937& rng,
+    EigenForecastState* forecast)
 {
     using Clock = std::chrono::high_resolution_clock;
     using Dur = std::chrono::duration<double>;
@@ -1684,7 +1685,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
             SparseCoarseOp sac_tmp;
             sac_tmp.build(P, A_ref, lat.ndof);
             // RR evolve coarse eigenvectors on the new operator
-            evolve_coarse_deflation(cdefl, sac_tmp);
+            evolve_coarse_deflation(cdefl, sac_tmp, forecast);
         }
     };
 
