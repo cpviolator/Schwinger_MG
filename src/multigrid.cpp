@@ -195,27 +195,34 @@ void MGHierarchy::rebuild_deeper_levels() {
 }
 
 // ---------------------------------------------------------------
+// Rebind restrict/prolong lambdas after prolongator changes.
+// Must be called after any build_from_vectors or warm rebuild.
+// ---------------------------------------------------------------
+void MGHierarchy::rebind_prolongator_lambdas() {
+    if (!geo_prolongators.empty()) {
+        auto& P0 = geo_prolongators[0];
+        levels[0].restrict_fn = [&P0](const Vec& v) { return P0.restrict_vec(v); };
+        levels[0].prolong_fn  = [&P0](const Vec& v) { return P0.prolong(v); };
+    }
+}
+
+// ---------------------------------------------------------------
 // Refresh prolongator via Rayleigh-Ritz of null vectors
 // ---------------------------------------------------------------
 RREvolveResult MGHierarchy::refresh_prolongator_rr(const DiracOp& D_new) {
     int k = (int)null_vecs_l0.size();
     int ndof = D_new.lat.ndof;
 
-    // RR: project D†D onto null vector subspace, diagonalise, rotate
     OpApply A_new = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
     auto rr = rr_evolve(A_new, null_vecs_l0, ndof);
 
-    // Update null vectors with rotated versions
     null_vecs_l0 = std::move(rr.eigvecs);
 
-    // Rebuild prolongator from rotated null vectors
     auto& P = geo_prolongators[0];
     P.build_from_vectors(null_vecs_l0);
+    rebind_prolongator_lambdas();
 
-    // Rebuild level-0 coarse operator: Ac = P†(D†D)P
     levels[0].Ac.build(D_new, P);
-
-    // Cascade to deeper levels
     rebuild_deeper_levels();
 
     return rr;
@@ -290,6 +297,7 @@ void MGHierarchy::refresh_prolongator_perturbation(
     // Rebuild prolongator from rotated null vectors
     auto& P = geo_prolongators[0];
     P.build_from_vectors(null_vecs_l0);
+    rebind_prolongator_lambdas();
 
     // Rebuild level-0 coarse operator: Ac = P†(D†D)P
     levels[0].Ac.build(D_new, P);

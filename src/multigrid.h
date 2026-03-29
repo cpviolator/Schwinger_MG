@@ -58,6 +58,7 @@ struct MGHierarchy {
     void set_symmetric(double damping = 0.8);
     Vec precondition(const Vec& b);
     void rebuild_deeper_levels();
+    void rebind_prolongator_lambdas();  // rebind restrict/prolong after P changes
     Vec prolong_to_fine(const Vec& v_coarse) const;
     std::pair<std::vector<Vec>, std::vector<double>>
     build_fine_deflation(int k, const OpApply& fine_op, int fine_dim,

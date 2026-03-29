@@ -1078,7 +1078,9 @@ int main(int argc, char** argv) {
         OpApply A_mg = [&D_mg](const Vec& s, Vec& d){ D_mg.apply_DdagD(s, d); };
         auto mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
                                       coarse_block, 20, rng, w_cycle, 3, 3, true);
-        mg.setup_sparse_coarse(A_mg, ndof, n_defl);
+        // For the study: use dense LU at coarsest level (no sparse CG/TRLM)
+        // This keeps rebuild cost low and V-cycle behaviour consistent.
+        // (setup_sparse_coarse skipped — coarsest solve uses Ac.solve() = dense LU)
 
         auto& P = mg.geo_prolongators[0];
         std::function<Vec(const Vec&)> mg_precond = [&mg](const Vec& b) -> Vec {
@@ -1169,12 +1171,13 @@ int main(int argc, char** argv) {
             std::mt19937 rng_mg_arm(seed + 111);
 
             auto mg_arm = mg;
+            mg_arm.rebind_prolongator_lambdas();  // fix stale captures from copy
 
             DiracOp D_arm(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
             mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                 D_arm.apply_DdagD(s, d);
             };
-            mg_arm.use_sparse_coarse = false; // preconditioner only — skip sparse rebuild + TRLM
+            mg_arm.use_sparse_coarse = false;
             mg_arm.init_Dv_cache(D_arm);
 
             // Preconditioner: uses mg_arm (differs between arms)
@@ -1218,11 +1221,15 @@ int main(int argc, char** argv) {
                 // Inner force uses shared P and empty cdefl — identical across arms.
                 bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
                 if (do_rebuild) {
-                    // Full warm MG rebuild (preconditioner only)
+                    // Warm rebuild: null vecs + prolongator + Galerkin
                     auto warm_vecs = mg_arm.null_vecs_l0;
                     mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
                         k_null, coarse_block, 5, rng_mg_arm,
                         warm_vecs, w_cycle, 3, 3);
+                    mg_arm.use_sparse_coarse = false;
+                    // Force dense direct solve at coarsest level (no sparse CG)
+                    int last_lev = (int)mg_arm.levels.size() - 1;
+                    mg_arm.levels[last_lev].coarse_solve = nullptr;
                     mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                         D_arm.apply_DdagD(s, d);
                     };
@@ -1241,6 +1248,7 @@ int main(int argc, char** argv) {
                         if (!R_pred.empty())
                             apply_rotation(mg_arm.null_vecs_l0, R_pred, ndof);
                         mg_arm.geo_prolongators[0].build_from_vectors(mg_arm.null_vecs_l0);
+                        mg_arm.rebind_prolongator_lambdas();
                         mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
                         mg_arm.rebuild_deeper_levels();
                     }
