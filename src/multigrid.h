@@ -90,12 +90,14 @@ struct MGHierarchy {
                                       const std::vector<Vec>& R_pred);
 
     // Perturbation-based null space evolution (Strategy C).
-    // Uses delta_D from gauge update to rotate null vecs via force_evolve.
-    // Zero full matvecs — only k sparse delta_D applications.
-    // Rebuilds P + Galerkin from rotated null vecs.
     void refresh_prolongator_perturbation(
         const DiracOp& D_new,
         const std::array<RVec, 2>& pi, double dt);
+
+    // FEAST-based prolongator refresh: recompute null space eigenvectors
+    // using FEAST with warm start from previous null vectors.
+    // Much cheaper than full inverse iteration when warm-started.
+    void refresh_prolongator_feast(const DiracOp& D_new, double feast_emax = 0.0);
 
     // Initialise Dv cache: compute D*v for each null vector
     void init_Dv_cache(const DiracOp& D);

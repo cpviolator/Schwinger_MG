@@ -249,6 +249,25 @@ void MGHierarchy::refresh_prolongator_forecast(const DiracOp& D_new,
 }
 
 // ---------------------------------------------------------------
+// FEAST-based prolongator refresh with warm start
+// ---------------------------------------------------------------
+void MGHierarchy::refresh_prolongator_feast(const DiracOp& D_new, double feast_emax) {
+    int k = (int)null_vecs_l0.size();
+
+    // Warm-start FEAST from previous null vectors
+    auto new_vecs = compute_near_null_space_feast(D_new, k, feast_emax, &null_vecs_l0);
+
+    null_vecs_l0 = std::move(new_vecs);
+
+    auto& P = geo_prolongators[0];
+    P.build_from_vectors(null_vecs_l0);
+    rebind_prolongator_lambdas();
+
+    levels[0].Ac.build(D_new, P);
+    rebuild_deeper_levels();
+}
+
+// ---------------------------------------------------------------
 // Initialise Dv cache: D*v for each null vector
 // ---------------------------------------------------------------
 void MGHierarchy::init_Dv_cache(const DiracOp& D) {

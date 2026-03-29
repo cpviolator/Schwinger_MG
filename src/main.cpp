@@ -1133,17 +1133,16 @@ int main(int argc, char** argv) {
             std::string label;
             bool rr_per_traj;
             int arm_rebuild_freq;
-            int arm_perturb_freq;  // perturbation refresh every N inner steps (0=off)
-            bool lie_forecast;     // use Lie algebra coefficient forecasting between rebuilds
+            int arm_perturb_freq;
+            bool lie_forecast;
+            bool use_feast;        // FEAST warm-start refresh between rebuilds
         };
         std::string rf = std::to_string(rebuild_freq);
         std::vector<ArmConfig> arms = {
-            {"Stale",              false, 0, 0, false},
-            {"Rebuild/" + rf,      false, rebuild_freq, 0, false},
-            {"Perturb/1+Rb/" + rf, false, rebuild_freq, 1, false},
-            {"Perturb/2+Rb/" + rf, false, rebuild_freq, 2, false},
-            {"Perturb/5+Rb/" + rf, false, rebuild_freq, 5, false},
-            {"LieAlg+Rb/" + rf,    false, rebuild_freq, 0, true},
+            {"Stale",              false, 0, 0, false, false},
+            {"Rebuild/" + rf,      false, rebuild_freq, 0, false, false},
+            {"FEAST/traj",         false, 0, 0, false, true},
+            {"FEAST+Rb/" + rf,     false, rebuild_freq, 0, false, true},
         };
         int n_arms = (int)arms.size();
 
@@ -1156,13 +1155,14 @@ int main(int argc, char** argv) {
                 run_arms.insert(std::stoi(tok));
         }
 
-        std::cout << "=== Hybrid Prolongator Refresh Study ===\n";
+        std::cout << "=== Prolongator Refresh Study ===\n";
         for (int i = 0; i < n_arms; i++) {
             bool skip = (!run_arms.empty() && run_arms.find(i) == run_arms.end());
-            std::cout << "  [" << i << "] " << std::setw(22) << std::left << (arms[i].label + ":")
-                      << "perturb=" << (arms[i].arm_perturb_freq > 0
-                         ? "every " + std::to_string(arms[i].arm_perturb_freq) + " inner" : "off")
-                      << "  rebuild=" << (arms[i].arm_rebuild_freq > 0
+            std::cout << "  [" << i << "] " << std::setw(22) << std::left << (arms[i].label + ":");
+            if (arms[i].use_feast) std::cout << "FEAST/traj";
+            else if (arms[i].arm_perturb_freq > 0) std::cout << "perturb/" << arms[i].arm_perturb_freq;
+            else std::cout << "no refresh";
+            std::cout << "  rebuild=" << (arms[i].arm_rebuild_freq > 0
                          ? "every " + std::to_string(arms[i].arm_rebuild_freq) + " traj" : "never")
                       << (skip ? "  [SKIP]" : "") << "\n";
         }
@@ -1272,6 +1272,9 @@ int main(int argc, char** argv) {
                         mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
                         mg_arm.rebuild_deeper_levels();
                     }
+                } else if (res.accepted && ac.use_feast) {
+                    // FEAST warm-start refresh of null space
+                    mg_arm.refresh_prolongator_feast(D_arm, feast_emax);
                 } else if (res.accepted && ac.rr_per_traj) {
                     // RR rotation of null vecs
                     mg_arm.refresh_prolongator_rr(D_arm);
