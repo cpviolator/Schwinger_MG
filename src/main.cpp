@@ -1093,123 +1093,138 @@ int main(int argc, char** argv) {
         ms_params.outer_type = OuterIntegrator::FGI;
         ms_params.defl_refresh = hmc_defl_refresh;
 
-        // --- Phase 3: Frequency sweep ---
-        // For each defl_refresh value, run baseline (stale only) and forecast
-        // (cheap rotation at every step, expensive rebuild+RR at defl_refresh)
-        std::vector<int> refresh_freqs = {1, 2, 3, 5, 10};
-
+        // --- Phase 3: Three-arm prolongator study ---
+        // Arm A: Stale P (current code — P never refreshed)
+        // Arm B: RR refresh P every trajectory (null vec RR + rebuild)
+        // Arm C: Forecast refresh P (predict rotation, periodic RR for history)
         struct ArmStats {
             int accept = 0;
             double dH_sum = 0, cg_sum = 0, time_sum = 0;
         };
 
-        std::cout << "=== Frequency Sweep: defl_refresh = {1,2,3,5,10} ===\n";
-        std::cout << "  Baseline: stale eigenvectors between refreshes\n";
-        std::cout << "  Forecast: cheap predicted rotation between expensive refreshes\n";
-        std::cout << "  (Exact matrix log for generator extraction)\n\n";
+        std::cout << "=== Three-Arm Prolongator Study ===\n";
+        std::cout << "  Arm A: Stale P (never refreshed)\n";
+        std::cout << "  Arm B: RR refresh P every trajectory\n";
+        std::cout << "  Arm C: Forecast P (predict rotation, RR every 3 traj for history)\n\n";
 
-        // Results table
-        struct SweepResult {
-            int freq;
-            ArmStats base, fc;
-        };
-        std::vector<SweepResult> results;
+        int rr_period = 3;  // Arm C does full RR every 3 trajectories
+        const char* arm_labels[] = {"A:Stale", "B:RR", "C:Forecast"};
 
-        for (int freq : refresh_freqs) {
-            std::cout << "--- defl_refresh=" << freq << " ---\n";
-            ms_params.defl_refresh = freq;
+        ArmStats stats[3];
 
-            // Both arms: same starting gauge, same seed
-            for (int arm = 0; arm < 2; arm++) {
-                bool use_fc = (arm == 1);
-                std::string label = use_fc ? "forecast" : "baseline";
+        for (int arm = 0; arm < 3; arm++) {
+            std::cout << "--- Arm " << arm_labels[arm] << " ---\n";
+            std::cout << std::setw(5) << "traj"
+                      << std::setw(8) << "Plaq"
+                      << std::setw(10) << "dH"
+                      << std::setw(4) << "A"
+                      << std::setw(6) << "CG"
+                      << std::setw(8) << "Time"
+                      << "\n";
+            std::cout << std::string(41, '-') << "\n";
 
-                GaugeField gauge_arm = gauge;
-                std::mt19937 rng_arm(seed + 3000);
+            GaugeField gauge_arm = gauge;
+            std::mt19937 rng_arm(seed + 3000);
 
-                CoarseDeflState cdefl_arm;
-                cdefl_arm.eigvecs = mg.sparse_Ac.defl_vecs;
-                cdefl_arm.eigvals = mg.sparse_Ac.defl_vals;
+            // Each arm gets its own copy of MG hierarchy
+            auto mg_arm = mg;
+            auto& P_arm = mg_arm.geo_prolongators[0];
 
-                EigenForecastState forecast_arm;
-                auto mg_arm = mg;
+            // Each arm needs its own preconditioner closure capturing its own mg
+            std::function<Vec(const Vec&)> pc_arm = [&mg_arm](const Vec& b) -> Vec {
+                return mg_arm.precondition(b);
+            };
 
-                ArmStats stat;
+            CoarseDeflState cdefl_arm;
+            cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
+            cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
 
-                std::cout << "  " << label << ": ";
-                std::cout.flush();
+            EigenForecastState ns_forecast;  // null space forecast (Arm C only)
 
-                for (int t = 0; t < n_traj; t++) {
-                    auto t0 = Clock::now();
-                    auto res = hmc_trajectory_mg_multiscale(
-                        gauge_arm, lat, mass, wilson_r, ms_params,
-                        cdefl_arm, P, mg_precond, rng_arm,
-                        use_fc ? &forecast_arm : nullptr);
-                    double dt = Dur(Clock::now() - t0).count();
+            for (int t = 0; t < n_traj; t++) {
+                auto t0 = Clock::now();
+                auto res = hmc_trajectory_mg_multiscale(
+                    gauge_arm, lat, mass, wilson_r, ms_params,
+                    cdefl_arm, P_arm, pc_arm, rng_arm);
+                double dt = Dur(Clock::now() - t0).count();
 
-                    if (res.accepted) stat.accept++;
-                    stat.dH_sum += std::abs(res.dH);
-                    stat.cg_sum += res.highmode_cg_iters;
-                    stat.time_sum += dt;
+                if (res.accepted) stats[arm].accept++;
+                stats[arm].dH_sum += std::abs(res.dH);
+                stats[arm].cg_sum += res.highmode_cg_iters;
+                stats[arm].time_sum += dt;
 
-                    // Between-trajectory: rebuild coarse op + RR
-                    if (res.accepted) {
-                        DiracOp Dn(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
-                        OpApply An = [&Dn](const Vec& s, Vec& d){ Dn.apply_DdagD(s, d); };
-                        mg_arm.sparse_Ac.build(P, An, ndof);
-                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac,
-                                                use_fc ? &forecast_arm : nullptr);
+                if (res.accepted) {
+                    DiracOp Dn(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
+                    OpApply An = [&Dn](const Vec& s, Vec& d){ Dn.apply_DdagD(s, d); };
+
+                    if (arm == 0) {
+                        // Arm A: stale P — only rebuild sparse coarse op for deflation
+                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
+                    } else if (arm == 1) {
+                        // Arm B: full RR refresh of prolongator every trajectory
+                        mg_arm.refresh_prolongator_rr(Dn);
+                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
+                    } else {
+                        // Arm C: forecast rotation, periodic full RR for history
+                        bool do_rr = (t % rr_period == 0) || (ns_forecast.history_len < 2);
+                        if (do_rr) {
+                            auto rr = mg_arm.refresh_prolongator_rr(Dn);
+                            // Extract generator and store in forecast history
+                            std::vector<Vec> H;
+                            extract_generator(rr.rotation, (int)rr.rotation.size(), H);
+                            ns_forecast.k = (int)rr.rotation.size();
+                            if (ns_forecast.history_len < EigenForecastState::max_history) {
+                                ns_forecast.H_history.insert(ns_forecast.H_history.begin(), std::move(H));
+                                ns_forecast.history_len++;
+                            } else {
+                                ns_forecast.H_history.pop_back();
+                                ns_forecast.H_history.insert(ns_forecast.H_history.begin(), std::move(H));
+                            }
+                        } else {
+                            // Cheap: forecast rotation only
+                            auto R_pred = forecast_rotation(ns_forecast);
+                            mg_arm.refresh_prolongator_forecast(Dn, R_pred);
+                        }
+                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                     }
                 }
 
-                std::cout << "accept=" << std::fixed << std::setprecision(0)
-                          << 100.0 * stat.accept / n_traj << "%"
-                          << "  |dH|=" << std::scientific << std::setprecision(2)
-                          << stat.dH_sum / n_traj
-                          << "  CG=" << (int)(stat.cg_sum / n_traj)
-                          << "  time=" << std::fixed << std::setprecision(2)
-                          << stat.time_sum / n_traj << "s\n";
-
-                if (!use_fc)
-                    results.push_back({freq, stat, {}});
-                else
-                    results.back().fc = stat;
+                std::cout << std::fixed
+                          << std::setw(5) << t
+                          << std::setw(8) << std::setprecision(4) << gauge_arm.avg_plaq()
+                          << std::setw(10) << std::setprecision(4) << res.dH
+                          << std::setw(4) << (res.accepted ? "Y" : "N")
+                          << std::setw(6) << res.highmode_cg_iters
+                          << std::setw(8) << std::setprecision(2) << dt
+                          << "\n";
             }
+            std::cout << "\n";
         }
 
-        // === Summary table ===
-        std::cout << "\n=== Summary Table ===\n";
-        std::cout << std::setw(8) << "refresh"
-                  << " |" << std::setw(8) << "B_acc"
-                  << std::setw(10) << "B_|dH|"
-                  << std::setw(7) << "B_CG"
-                  << std::setw(9) << "B_time"
-                  << " |" << std::setw(8) << "F_acc"
-                  << std::setw(10) << "F_|dH|"
-                  << std::setw(7) << "F_CG"
-                  << std::setw(9) << "F_time"
-                  << " |" << std::setw(8) << "CG_rat"
+        // === Summary ===
+        std::cout << "=== Prolongator Study Summary (" << n_traj << " trajectories) ===\n";
+        std::cout << std::setw(12) << "Arm"
+                  << std::setw(8) << "Acc"
+                  << std::setw(10) << "Avg|dH|"
+                  << std::setw(8) << "AvgCG"
+                  << std::setw(10) << "AvgTime"
+                  << std::setw(10) << "CG_ratio"
                   << "\n";
-        std::cout << std::string(85, '-') << "\n";
-
-        for (auto& r : results) {
-            std::cout << std::setw(8) << r.freq
-                      << " |" << std::setw(7) << std::fixed << std::setprecision(0)
-                      << 100.0 * r.base.accept / n_traj << "%"
+        std::cout << std::string(58, '-') << "\n";
+        for (int arm = 0; arm < 3; arm++) {
+            std::cout << std::setw(12) << arm_labels[arm]
+                      << std::setw(7) << std::fixed << std::setprecision(0)
+                      << 100.0 * stats[arm].accept / n_traj << "%"
                       << std::setw(10) << std::scientific << std::setprecision(2)
-                      << r.base.dH_sum / n_traj
-                      << std::setw(7) << (int)(r.base.cg_sum / n_traj)
-                      << std::setw(9) << std::fixed << std::setprecision(2)
-                      << r.base.time_sum / n_traj
-                      << " |" << std::setw(7) << std::setprecision(0)
-                      << 100.0 * r.fc.accept / n_traj << "%"
-                      << std::setw(10) << std::scientific << std::setprecision(2)
-                      << r.fc.dH_sum / n_traj
-                      << std::setw(7) << (int)(r.fc.cg_sum / n_traj)
-                      << std::setw(9) << std::fixed << std::setprecision(2)
-                      << r.fc.time_sum / n_traj
-                      << " |" << std::setw(8) << std::setprecision(3)
-                      << (r.base.cg_sum > 0 ? r.fc.cg_sum / r.base.cg_sum : 0.0)
+                      << stats[arm].dH_sum / n_traj
+                      << std::setw(8) << (int)(stats[arm].cg_sum / n_traj)
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << stats[arm].time_sum / n_traj << "s"
+                      << std::setw(10) << std::setprecision(3)
+                      << (stats[0].cg_sum > 0 ? stats[arm].cg_sum / stats[0].cg_sum : 0.0)
                       << "\n";
         }
 

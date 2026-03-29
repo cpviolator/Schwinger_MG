@@ -71,6 +71,16 @@ struct MGHierarchy {
     void setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
                               int n_defl = 16, double cg_tol = 1e-12,
                               int max_cg_iter = 200);
+
+    // Refresh prolongator via RR of null vectors against new D†D.
+    // Rotates null_vecs_l0, rebuilds P, Galerkin coarse ops, cascades.
+    // Returns RR result (includes rotation matrix for generator extraction).
+    RREvolveResult refresh_prolongator_rr(const DiracOp& D_new);
+
+    // Refresh prolongator using a predicted rotation (no RR, no fine matvecs for rotation).
+    // Rotates null_vecs_l0 by R_pred, rebuilds P, Galerkin coarse ops, cascades.
+    void refresh_prolongator_forecast(const DiracOp& D_new,
+                                      const std::vector<Vec>& R_pred);
 };
 
 std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,

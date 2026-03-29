@@ -192,6 +192,54 @@ void MGHierarchy::rebuild_deeper_levels() {
     }
 }
 
+// ---------------------------------------------------------------
+// Refresh prolongator via Rayleigh-Ritz of null vectors
+// ---------------------------------------------------------------
+RREvolveResult MGHierarchy::refresh_prolongator_rr(const DiracOp& D_new) {
+    int k = (int)null_vecs_l0.size();
+    int ndof = D_new.lat.ndof;
+
+    // RR: project D†D onto null vector subspace, diagonalise, rotate
+    OpApply A_new = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
+    auto rr = rr_evolve(A_new, null_vecs_l0, ndof);
+
+    // Update null vectors with rotated versions
+    null_vecs_l0 = std::move(rr.eigvecs);
+
+    // Rebuild prolongator from rotated null vectors
+    auto& P = geo_prolongators[0];
+    P.build_from_vectors(null_vecs_l0);
+
+    // Rebuild level-0 coarse operator: Ac = P†(D†D)P
+    levels[0].Ac.build(D_new, P);
+
+    // Cascade to deeper levels
+    rebuild_deeper_levels();
+
+    return rr;
+}
+
+// ---------------------------------------------------------------
+// Refresh prolongator using a predicted rotation (no RR)
+// ---------------------------------------------------------------
+void MGHierarchy::refresh_prolongator_forecast(const DiracOp& D_new,
+                                                const std::vector<Vec>& R_pred) {
+    int ndof = D_new.lat.ndof;
+
+    // Rotate null vectors by predicted rotation
+    apply_rotation(null_vecs_l0, R_pred, ndof);
+
+    // Rebuild prolongator from rotated null vectors
+    auto& P = geo_prolongators[0];
+    P.build_from_vectors(null_vecs_l0);
+
+    // Rebuild level-0 coarse operator: Ac = P†(D†D)P
+    levels[0].Ac.build(D_new, P);
+
+    // Cascade to deeper levels
+    rebuild_deeper_levels();
+}
+
 // Prolong a coarsest-level vector all the way to the fine grid
 // by chaining prolong_fn calls from coarsest to finest.
 Vec MGHierarchy::prolong_to_fine(const Vec& v_coarse) const {
