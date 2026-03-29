@@ -1559,7 +1559,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     Prolongator& P,
     std::function<Vec(const Vec&)>& mg_precond,
     std::mt19937& rng,
-    EigenForecastState* forecast)
+    EigenForecastState* forecast,
+    const std::function<void()>* pre_solve)
 {
     using Clock = std::chrono::high_resolution_clock;
     using Dur = std::chrono::duration<double>;
@@ -1617,6 +1618,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
     auto compute_outer_force = [&](std::array<RVec, 2>& f_out) {
         auto t0 = Clock::now();
+        if (pre_solve) (*pre_solve)();  // refresh MG before CG solve
         DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff_full, fl;
         gauge_force(gauge, params.beta, gf);
@@ -1818,6 +1820,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     }
 
     // --- Final Hamiltonian ---
+    if (pre_solve) (*pre_solve)();  // refresh MG before final H CG
     double KE_final = mom.kinetic_energy();
     double SG_final = gauge_action(gauge, params.beta);
     double SF_final;

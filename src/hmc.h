@@ -276,7 +276,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     Prolongator& P,
     std::function<Vec(const Vec&)>& mg_precond,
     std::mt19937& rng,
-    EigenForecastState* forecast = nullptr);
+    EigenForecastState* forecast = nullptr,
+    const std::function<void()>* pre_solve = nullptr);  // called before each CG
 
 // Reversibility test: forward trajectory → negate momenta → backward trajectory
 // Returns ||U_final - U_initial|| / ||U_initial|| (should be ~machine epsilon)
