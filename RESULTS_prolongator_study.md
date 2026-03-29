@@ -61,3 +61,29 @@ Key finding: RR rotation of null vectors degrades MG quality.
 Only warm rebuild (fresh inverse iteration) improves CG.
 Rotation-based forecasting (Strategies A-E) cannot substitute for
 fresh near-null directions.
+
+## FEAST Integration Status
+
+FEAST v2.0 integrated via CMake FetchContent (GitHub certik/feast).
+Built with gfortran + macOS Accelerate.
+
+What works:
+- FEAST on coarse operator (dim=64-512): identical eigenvalues to TRLM,
+  1-iteration warm-start convergence, ~1s
+- FEAST for fine null space initial build (L=16, dim=512): identical
+  CG counts to inverse iteration
+- CLI: --eigensolver feast --feast-emax <float>
+
+What's broken (commits a148acb-ec1fcd1):
+- FEAST-MG fine refresh in HMC study: trajectory hangs for arms with
+  feast_fine_refresh=true. Bug is in the study arm infrastructure
+  (lambda capture or MG copy issue), NOT in FEAST itself.
+- gamma5*D FEAST (ec1fcd1): correct eigenvalues on L=16 but not
+  tested in HMC study due to above hang.
+
+Next steps:
+- Fix study arm hang (likely stale lambda capture in coarse_solve
+  after mg_arm = mg copy — same class of bug as the restrict/prolong
+  lambda issue fixed in af7013d)
+- Test MG-preconditioned FEAST on gamma5*D for fine null space refresh
+- Compare FEAST warm-start (seeded from TRLM) vs warm inverse iteration
