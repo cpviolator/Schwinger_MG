@@ -1,5 +1,6 @@
 #include "hmc.h"
 #include "eigensolver.h"
+#include "multigrid.h"
 #include "smoother.h"
 #include <cmath>
 #include <chrono>
@@ -1560,7 +1561,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     std::function<Vec(const Vec&)>& mg_precond,
     std::mt19937& rng,
     EigenForecastState* forecast,
-    const std::function<void()>* pre_solve)
+    const std::function<void()>* pre_solve,
+    MGHierarchy* mg_hierarchy)
 {
     using Clock = std::chrono::high_resolution_clock;
     using Dur = std::chrono::duration<double>;
@@ -1695,6 +1697,54 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         }
     };
 
+    // Perturbation-based MG prolongator refresh: compute delta_D before gauge
+    // update, then force_evolve + rebuild P after. Zero full matvecs.
+    auto maybe_perturb_mg = [&](double dti) {
+        if (!mg_hierarchy || params.mg_perturb_freq <= 0) return;
+        if (inner_step_counter == 0) return;
+        if (inner_step_counter % params.mg_perturb_freq != 0) return;
+
+        auto& mg = *mg_hierarchy;
+        int k = (int)mg.null_vecs_l0.size();
+        if (k == 0 || mg.Dv_l0.empty()) return;
+
+        // Compute delta_D * v_i BEFORE gauge update (uses current/old gauge)
+        DiracOp D_old(lat, gauge, mass, wilson_r, c_sw, mu_t);
+        std::vector<Vec> dDv(k);
+        for (int j = 0; j < k; j++) {
+            dDv[j].resize(lat.ndof);
+            D_old.apply_delta_D(mg.null_vecs_l0[j], dDv[j], mom.pi, dti);
+        }
+
+        // Gauge update happens in caller after this returns
+        // We store dDv for use after gauge update
+        // ... actually, we need to do the full sequence here.
+        // Do the gauge update, force_evolve, rebuild P, then the caller
+        // skips its own gauge update.
+
+        // Better approach: just apply the perturbation AFTER gauge update
+        // by using the fact that delta_D was computed on old gauge.
+        // We pass dDv to force_evolve_precomputed, which only needs the
+        // inner products and doesn't re-apply delta_D.
+        // But we need to update gauge first for the Galerkin rebuild...
+
+        // Cleanest: do gauge update HERE, then force_evolve + rebuild
+        update_gauge(dti);
+
+        auto result = force_evolve_precomputed(
+            mg.null_vecs_l0, mg.null_evals_l0, mg.Dv_l0, dDv, lat.ndof);
+        mg.null_vecs_l0 = std::move(result.eigvecs);
+        mg.null_evals_l0 = std::move(result.eigvals);
+        mg.Dv_l0 = std::move(result.Dv);
+
+        // Rebuild P from rotated null vecs
+        mg.geo_prolongators[0].build_from_vectors(mg.null_vecs_l0);
+        // Rebuild Galerkin coarse op
+        DiracOp D_new(lat, gauge, mass, wilson_r, c_sw, mu_t);
+        mg.levels[0].Ac.build(D_new, mg.geo_prolongators[0]);
+        mg.rebuild_deeper_levels();
+    };
+
     // ── Inner sub-integrator: N_inner leapfrog steps with low-mode + gauge force ──
     auto inner_integrator = [&](double dt_total) {
         int ni = params.n_inner;
@@ -1704,7 +1754,15 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         compute_inner_force(fl);
         kick_mom(fl, 0.5 * dti);
         for (int i = 0; i < ni; i++) {
-            update_gauge(dti);
+            bool did_perturb = false;
+            if (mg_hierarchy && params.mg_perturb_freq > 0 &&
+                inner_step_counter > 0 &&
+                (inner_step_counter + 1) % params.mg_perturb_freq == 0) {
+                // Perturbation refresh includes gauge update
+                maybe_perturb_mg(dti);
+                did_perturb = true;
+            }
+            if (!did_perturb) update_gauge(dti);
             inner_step_counter++;
             maybe_refresh_deflation();
             compute_inner_force(fl);

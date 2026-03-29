@@ -1222,6 +1222,50 @@ ForceEvolveResult force_evolve(
     return result;
 }
 
+// Force-based evolution with pre-computed delta_D vectors
+ForceEvolveResult force_evolve_precomputed(
+    const std::vector<Vec>& eigvecs,
+    const std::vector<double>& eigvals,
+    const std::vector<Vec>& Dv,
+    const std::vector<Vec>& dDv,
+    int n)
+{
+    int k = (int)eigvecs.size();
+    ForceEvolveResult result;
+    result.matvecs = 0;
+
+    std::vector<Vec> T_cols(k, Vec(k, 0.0));
+    for (int j = 0; j < k; j++) {
+        for (int i = 0; i <= j; i++) {
+            cx val = dot(dDv[i], Dv[j]) + dot(Dv[i], dDv[j]) + dot(dDv[i], dDv[j]);
+            if (i == j) val += eigvals[i];
+            T_cols[j][i] = val;
+            if (i != j) T_cols[i][j] = std::conj(val);
+        }
+    }
+
+    RVec evals;
+    std::vector<Vec> evecs;
+    lanczos_eigen(T_cols, k, evals, evecs);
+
+    result.eigvecs.resize(k);
+    result.eigvals.resize(k);
+    result.Dv.resize(k);
+    for (int i = 0; i < k; i++) {
+        result.eigvecs[i] = zeros(n);
+        result.Dv[i] = zeros(n);
+        for (int j = 0; j < k; j++) {
+            cx c = evecs[j][i];
+            axpy(c, eigvecs[j], result.eigvecs[i]);
+            axpy(c, Dv[j], result.Dv[i]);
+            axpy(c, dDv[j], result.Dv[i]);
+        }
+        result.eigvals[i] = evals[i];
+    }
+    result.max_residual = -1;
+    return result;
+}
+
 // =========================================================================
 // Chronological generator forecasting
 // =========================================================================

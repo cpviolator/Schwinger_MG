@@ -236,6 +236,7 @@ struct MGMultiScaleParams {
     int inner_smooth = 3;   // MR smoothing iters in inner force (0=raw projection)
     OuterIntegrator outer_type = OuterIntegrator::Leapfrog;
     int defl_refresh = 0;   // refresh coarse deflation every N inner steps (0=never)
+    int mg_perturb_freq = 0; // perturbation-refresh MG prolongator every N inner steps (0=never)
     double c_sw = 0.0;     // clover coefficient
     double mu_t = 0.0;    // twisted mass parameter
     bool use_eo = false;   // even-odd preconditioning
@@ -269,6 +270,7 @@ void evolve_coarse_deflation(CoarseDeflState& cdefl,
     EigenForecastState* forecast = nullptr);
 
 // MG multi-timescale trajectory
+struct MGHierarchy;  // forward declaration
 MGMultiScaleResult hmc_trajectory_mg_multiscale(
     GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
     const MGMultiScaleParams& params,
@@ -277,7 +279,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     std::function<Vec(const Vec&)>& mg_precond,
     std::mt19937& rng,
     EigenForecastState* forecast = nullptr,
-    const std::function<void()>* pre_solve = nullptr);  // called before each CG
+    const std::function<void()>* pre_solve = nullptr,
+    MGHierarchy* mg_hierarchy = nullptr);  // called before each CG
 
 // Reversibility test: forward trajectory → negate momenta → backward trajectory
 // Returns ||U_final - U_initial|| / ||U_initial|| (should be ~machine epsilon)

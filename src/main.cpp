@@ -214,6 +214,7 @@ int main(int argc, char** argv) {
     bool   hmc_eigen_forecast = false;
     bool   forecast_study = false;
     int    rebuild_freq = 5;   // warm MG rebuild period for forecast study
+    int    mg_perturb_freq = 0; // perturbation-refresh MG every N inner steps
     bool   use_eo = false;
     int    hmc_n_outer = 10;
     int    hmc_n_inner = 5;
@@ -277,6 +278,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-eigen-forecast")) hmc_eigen_forecast = true;
         else if (match("--forecast-study")) forecast_study = true;
         else if (match("--rebuild-freq")) rebuild_freq = next_int();
+        else if (match("--mg-perturb-freq")) mg_perturb_freq = next_int();
         else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
         else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
@@ -1091,6 +1093,7 @@ int main(int argc, char** argv) {
         ms_params.mu_t = mu_t;
         ms_params.outer_type = OuterIntegrator::FGI;
         ms_params.defl_refresh = hmc_defl_refresh;
+        ms_params.mg_perturb_freq = mg_perturb_freq;
         ms_params.use_eo = use_eo;
 
         // --- Phase 3: Hybrid prolongator refresh study ---
@@ -1104,20 +1107,24 @@ int main(int argc, char** argv) {
             std::string label;
             bool rr_per_traj;
             int arm_rebuild_freq;
+            int arm_perturb_freq;  // perturbation refresh every N inner steps (0=off)
         };
         std::vector<ArmConfig> arms = {
-            {"Stale",                                false, 0},
-            {"Rebuild/" + std::to_string(rebuild_freq), false, rebuild_freq},
-            {"RR+Rebuild/" + std::to_string(rebuild_freq), true, rebuild_freq},
+            {"Stale",                                   false, 0, 0},
+            {"Rebuild/" + std::to_string(rebuild_freq), false, rebuild_freq, 0},
+            {"Perturb/1+Rb/" + std::to_string(rebuild_freq), false, rebuild_freq, 1},
+            {"Perturb/2+Rb/" + std::to_string(rebuild_freq), false, rebuild_freq, 2},
+            {"Perturb/5+Rb/" + std::to_string(rebuild_freq), false, rebuild_freq, 5},
         };
         int n_arms = (int)arms.size();
 
         std::cout << "=== Hybrid Prolongator Refresh Study ===\n";
         for (auto& a : arms)
-            std::cout << "  " << std::setw(20) << std::left << (a.label + ":")
-                      << (a.rr_per_traj ? "RR every traj" : "no RR")
+            std::cout << "  " << std::setw(22) << std::left << (a.label + ":")
+                      << "perturb=" << (a.arm_perturb_freq > 0
+                         ? "every " + std::to_string(a.arm_perturb_freq) + " inner" : "off")
                       << "  rebuild=" << (a.arm_rebuild_freq > 0
-                         ? "every " + std::to_string(a.arm_rebuild_freq) : "never") << "\n";
+                         ? "every " + std::to_string(a.arm_rebuild_freq) + " traj" : "never") << "\n";
         std::cout << std::right << "\n";
 
         std::vector<ArmStats> stats(n_arms);
@@ -1155,13 +1162,19 @@ int main(int argc, char** argv) {
             cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
             cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
 
+            // Set per-arm perturbation frequency
+            MGMultiScaleParams arm_params = ms_params;
+            arm_params.mg_perturb_freq = ac.arm_perturb_freq;
+
             for (int t = 0; t < n_traj; t++) {
                 if (c_sw != 0.0) D_arm.compute_clover_field();
 
                 auto t0 = Clock::now();
                 auto res = hmc_trajectory_mg_multiscale(
-                    gauge_arm, lat, mass, wilson_r, ms_params,
-                    cdefl_arm, *P_arm_ptr, pc_arm, rng_arm);
+                    gauge_arm, lat, mass, wilson_r, arm_params,
+                    cdefl_arm, *P_arm_ptr, pc_arm, rng_arm,
+                    nullptr, nullptr,
+                    ac.arm_perturb_freq > 0 ? &mg_arm : nullptr);
                 double dt = Dur(Clock::now() - t0).count();
 
                 if (res.accepted) stats[ai].accept++;

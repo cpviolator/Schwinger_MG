@@ -129,6 +129,14 @@ ForceEvolveResult force_evolve(
     const std::function<void(const Vec&, Vec&)>& apply_deltaD_dag,
     int n);
 
+// Variant with pre-computed delta_D * v_i vectors (avoids functor overhead)
+ForceEvolveResult force_evolve_precomputed(
+    const std::vector<Vec>& eigvecs,
+    const std::vector<double>& eigvals,
+    const std::vector<Vec>& Dv,
+    const std::vector<Vec>& dDv,   // pre-computed delta_D * v_i
+    int n);
+
 // --- Chronological generator forecasting for eigenspace evolution ---
 // Tracks the Hermitian generator H of the RR rotation U = exp(iH) across
 // trajectories. Extrapolates H to predict the next rotation, pre-rotates
