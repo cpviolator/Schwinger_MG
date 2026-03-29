@@ -174,6 +174,16 @@ add_test(NAME hmc_tc
 add_test(NAME hmc_tc_eo
     COMMAND schwinger --hmc --mu-t 0.1 --csw 1.0 --even-odd -L 16 --hmc-beta 2.0 --hmc-traj 10 --hmc-therm 10 -t 1)
 
+# --- FEAST Eigensolver ---
+add_test(NAME feast_mg_solver
+    COMMAND schwinger -L 16 --mg-levels 2 -b 4 -k 4 --eigensolver feast --feast-emax 0.5 -t 1 -n 5)
+add_test(NAME feast_null_space
+    COMMAND schwinger -L 16 --mg-levels 2 -b 4 -k 4 --eigensolver feast --feast-emax 0.3 -t 1 -n 5)
+add_test(NAME feast_coarse_defl
+    COMMAND schwinger -L 16 --hmc-mg-multiscale --mg-levels 2 -b 4 -k 4
+        --eigensolver feast --feast-emax 0.5
+        --hmc-n-outer 5 --hmc-n-inner 1 --hmc-n-defl 8 --hmc-traj 3 --hmc-therm 3 -t 1)
+
 # --- Sparse Coarse Eigenvector Evolution ---
 add_test(NAME sparse_coarse_evolution
     COMMAND schwinger -L 32 --test-sparse-coarse --mg-levels 2 -b 4 -k 4
@@ -190,6 +200,7 @@ set_tests_properties(
     force_wilson force_clover force_wilson_eo force_clover_eo
     force_tm force_tm_eo force_tc force_tc_eo
     hmc_tm hmc_tm_eo hmc_tc hmc_tc_eo
+    feast_mg_solver feast_null_space feast_coarse_defl
     sparse_coarse_evolution
     PROPERTIES TIMEOUT 300
 )
