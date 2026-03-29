@@ -10,6 +10,7 @@
 #include "smoother.h"
 #include <vector>
 #include <functional>
+#include <string>
 #include <random>
 #include <iostream>
 #include <omp.h>
@@ -74,7 +75,9 @@ struct MGHierarchy {
     //   max_cg_iter: max CG iterations per coarse solve
     void setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
                               int n_defl = 16, double cg_tol = 1e-12,
-                              int max_cg_iter = 200);
+                              int max_cg_iter = 200,
+                              const std::string& solver = "trlm",
+                              double feast_emax = 0.0);
 
     // Refresh prolongator via RR of null vectors against new D†D.
     // Rotates null_vecs_l0, rebuilds P, Galerkin coarse ops, cascades.

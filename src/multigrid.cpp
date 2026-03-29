@@ -661,20 +661,21 @@ std::vector<Vec> refresh_from_coarse_eigvecs(
 // the coarsest-level solve to use deflated CG.
 void MGHierarchy::setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
                                        int n_defl, double cg_tol,
-                                       int max_cg_iter) {
+                                       int max_cg_iter,
+                                       const std::string& solver,
+                                       double feast_emax) {
     if (geo_prolongators.empty()) return;
     auto& P0 = geo_prolongators[0];
 
     // Build sparse coarse op from the same Galerkin projection
     sparse_Ac.build(P0, fine_op, fine_dim);
 
-    // Run TRLM to find low modes for deflation
     std::cout << "  Sparse coarse: dim=" << sparse_Ac.dim
               << " (nbx=" << sparse_Ac.nbx << " nby=" << sparse_Ac.nby
               << " k_vec=" << sparse_Ac.k_vec << ")\n";
-    std::cout << "  Running TRLM for " << n_defl << " deflation vectors...\n";
+    std::cout << "  Running " << solver << " for " << n_defl << " deflation vectors...\n";
 
-    sparse_Ac.setup_deflation(n_defl);
+    sparse_Ac.setup_deflation(n_defl, 0, 100, 1e-10, solver, feast_emax);
 
     std::cout << "  TRLM eigenvalues:";
     for (int i = 0; i < std::min(n_defl, (int)sparse_Ac.defl_vals.size()); i++)

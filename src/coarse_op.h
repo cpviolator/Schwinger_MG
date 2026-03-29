@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <numeric>
 #include <array>
+#include <string>
 
 // Forward declaration — defined in eigensolver.h
 void lanczos_eigen(std::vector<Vec>& A_cols, int n, RVec& evals, std::vector<Vec>& evecs);
@@ -476,7 +477,9 @@ struct SparseCoarseOp {
     // Finds n_ev smallest eigenpairs using Krylov space of size n_kr.
     // This is called once after build(), then deflated CG uses the result.
     void setup_deflation(int n_ev, int n_kr = 0, int max_restarts = 100,
-                         double tol = 1e-10);
+                         double tol = 1e-10,
+                         const std::string& solver = "trlm",
+                         double feast_emax = 0.0);
 
     // Solve A_c x = b via CG with deflated initial guess.
     // Deflation vectors are used ONLY for the initial guess:

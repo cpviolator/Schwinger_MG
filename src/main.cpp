@@ -9,6 +9,7 @@
 #include "eigensolver.h"
 #include "smoother.h"
 #include "multigrid.h"
+#include "feast_solver.h"
 #include <set>
 #include <sstream>
 #include "solvers.h"
@@ -89,6 +90,8 @@ void print_usage(const char* prog) {
         << "  --forecast-study      Run forecasting vs baseline comparative study\n"
         << "  --rebuild-freq <int>  Warm MG rebuild period for study        [5]\n"
         << "  --hmc-revtest         Run reversibility test (forward+backward)\n"
+        << "  --eigensolver <s>     Eigensolver: trlm or feast           [trlm]\n"
+        << "  --feast-emax <float>  FEAST spectral window upper bound     [auto]\n"
         << "  --verify-forces       Numerical derivative force verification\n"
         << "  --hmc-fresh-period <N> Fresh TRLM every N trajectories  [10]\n"
         << "\n"
@@ -217,6 +220,8 @@ int main(int argc, char** argv) {
     bool   forecast_study = false;
     int    rebuild_freq = 5;   // warm MG rebuild period for forecast study
     int    mg_perturb_freq = 0; // perturbation-refresh MG every N inner steps
+    std::string eigensolver = "trlm"; // "trlm" or "feast"
+    double feast_emax = 0.0;         // FEAST upper bound (0 = auto)
     std::string only_arms_str;  // comma-separated arm indices to run (empty=all)
     bool   use_eo = false;
     int    hmc_n_outer = 10;
@@ -282,6 +287,8 @@ int main(int argc, char** argv) {
         else if (match("--forecast-study")) forecast_study = true;
         else if (match("--rebuild-freq")) rebuild_freq = next_int();
         else if (match("--mg-perturb-freq")) mg_perturb_freq = next_int();
+        else if (match("--eigensolver")) eigensolver = argv[++i];
+        else if (match("--feast-emax")) feast_emax = next_dbl();
         else if (match("--only-arms")) only_arms_str = argv[++i];
         else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
@@ -723,7 +730,7 @@ int main(int argc, char** argv) {
                                       3, 3, true);
 
         // Setup sparse coarse operator + TRLM deflation
-        mg.setup_sparse_coarse(A_mg, lat.ndof, n_defl);
+        mg.setup_sparse_coarse(A_mg, lat.ndof, n_defl, 1e-12, 200, eigensolver, feast_emax);
 
         int cdim = mg.sparse_Ac.dim;
         std::cout << "  Coarse dim: " << cdim << "  n_defl: " << n_defl << "\n";
@@ -1081,7 +1088,7 @@ int main(int argc, char** argv) {
         // Set up sparse coarse with deflated CG for coarsest-level solve.
         // TRLM runs once here. Subsequent rebuild_deeper_levels calls only
         // rebuild the stencil (cheap), not TRLM (expensive).
-        mg.setup_sparse_coarse(A_mg, ndof, n_defl);
+        mg.setup_sparse_coarse(A_mg, ndof, n_defl, 1e-12, 200, eigensolver, feast_emax);
 
         auto& P = mg.geo_prolongators[0];
         std::function<Vec(const Vec&)> mg_precond = [&mg](const Vec& b) -> Vec {
