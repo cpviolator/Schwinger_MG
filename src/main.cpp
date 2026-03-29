@@ -1169,46 +1169,44 @@ int main(int argc, char** argv) {
                 stats[ai].cg_sum += res.highmode_cg_iters;
                 stats[ai].time_sum += dt;
 
-                if (res.accepted) {
-                    if (c_sw != 0.0) D_arm.compute_clover_field();
+                // Update clover cache if gauge changed
+                if (res.accepted && c_sw != 0.0) D_arm.compute_clover_field();
 
-                    bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
-
-                    if (do_rebuild) {
-                        // Full warm MG rebuild
-                        auto warm_vecs = mg_arm.null_vecs_l0;
-                        mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
-                            k_null, coarse_block, 5, rng_mg_arm,
-                            warm_vecs, w_cycle, 3, 3);
-                        mg_arm.setup_sparse_coarse(
-                            [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); },
-                            ndof, n_defl);
-                        mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
-                            D_arm.apply_DdagD(s, d);
-                        };
-                        mg_arm.init_Dv_cache(D_arm);
-                        P_arm_ptr = &mg_arm.geo_prolongators[0];
-                        cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
-                        cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
-                    } else if (ac.rr_per_traj) {
-                        // RR refresh of null vecs
-                        mg_arm.refresh_prolongator_rr(D_arm);
-                        mg_arm.init_Dv_cache(D_arm);  // refresh Dv cache
-                        if (!mg_arm.use_sparse_coarse) {
-                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
-                            mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
-                        }
-                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
-                    } else {
-                        // Stale P — only rebuild Galerkin + deflation
-                        mg_arm.levels[0].Ac.build(D_arm, *P_arm_ptr);
-                        mg_arm.rebuild_deeper_levels();
-                        if (!mg_arm.use_sparse_coarse) {
-                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
-                            mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
-                        }
-                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
+                // Periodic warm MG rebuild (regardless of acceptance — always on current gauge)
+                bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
+                if (do_rebuild) {
+                    auto warm_vecs = mg_arm.null_vecs_l0;
+                    mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
+                        k_null, coarse_block, 5, rng_mg_arm,
+                        warm_vecs, w_cycle, 3, 3);
+                    mg_arm.setup_sparse_coarse(
+                        [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); },
+                        ndof, n_defl);
+                    mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
+                        D_arm.apply_DdagD(s, d);
+                    };
+                    mg_arm.init_Dv_cache(D_arm);
+                    P_arm_ptr = &mg_arm.geo_prolongators[0];
+                    cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
+                    cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
+                } else if (res.accepted && ac.rr_per_traj) {
+                    // RR refresh of null vecs (only on accepted — gauge changed)
+                    mg_arm.refresh_prolongator_rr(D_arm);
+                    mg_arm.init_Dv_cache(D_arm);
+                    if (!mg_arm.use_sparse_coarse) {
+                        OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                        mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
                     }
+                    evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
+                } else if (res.accepted) {
+                    // Stale P — only rebuild Galerkin + deflation
+                    mg_arm.levels[0].Ac.build(D_arm, *P_arm_ptr);
+                    mg_arm.rebuild_deeper_levels();
+                    if (!mg_arm.use_sparse_coarse) {
+                        OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                        mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
+                    }
+                    evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                 }
 
                 std::cout << std::fixed
