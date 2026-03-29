@@ -85,6 +85,7 @@ void print_usage(const char* prog) {
         << "  --hmc-defl-refresh <N> Refresh coarse deflation every N inner steps [0=off]\n"
         << "  --hmc-eigen-forecast  Enable chronological eigenspace forecasting\n"
         << "  --forecast-study      Run forecasting vs baseline comparative study\n"
+        << "  --rebuild-freq <int>  Warm MG rebuild period for study        [5]\n"
         << "  --hmc-revtest         Run reversibility test (forward+backward)\n"
         << "  --verify-forces       Numerical derivative force verification\n"
         << "  --hmc-fresh-period <N> Fresh TRLM every N trajectories  [10]\n"
@@ -212,6 +213,7 @@ int main(int argc, char** argv) {
     int    hmc_defl_refresh = 0;
     bool   hmc_eigen_forecast = false;
     bool   forecast_study = false;
+    int    rebuild_freq = 5;   // warm MG rebuild period for forecast study
     bool   use_eo = false;
     int    hmc_n_outer = 10;
     int    hmc_n_inner = 5;
@@ -274,6 +276,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-defl-refresh")) hmc_defl_refresh = std::atoi(argv[++i]);
         else if (match("--hmc-eigen-forecast")) hmc_eigen_forecast = true;
         else if (match("--forecast-study")) forecast_study = true;
+        else if (match("--rebuild-freq")) rebuild_freq = next_int();
         else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
         else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
@@ -993,16 +996,10 @@ int main(int argc, char** argv) {
         using Clock = std::chrono::high_resolution_clock;
         using Dur = std::chrono::duration<double>;
 
-        // Study parameters (use CLI values where available)
-        int n_traj = hmc_traj > 0 ? hmc_traj : 50;
-        int n_defl = n_defl_vecs > 0 ? n_defl_vecs : 16;
+        // All parameters come from CLI — no hardcoded overrides
+        int n_traj = hmc_traj;
+        int n_defl = n_defl_vecs > 0 ? n_defl_vecs : hmc_n_defl;
         int ndof = lat.ndof;
-        if (hmc_n_outer == 10) hmc_n_outer = 5;
-        if (hmc_n_inner == 5)  hmc_n_inner = 3;
-        if (hmc_defl_refresh == 0) hmc_defl_refresh = 3;
-        if (hmc_therm == 20) hmc_therm = 50;
-        if (k_null == 4) k_null = 8;        // more null vecs for better MG
-        if (max_iter == 300) max_iter = 1000; // remove CG ceiling
         int total_steps = hmc_n_outer * hmc_n_inner;
 
         std::cout << "=== Eigenspace Forecasting Comparative Study ===\n\n";
@@ -1104,23 +1101,24 @@ int main(int argc, char** argv) {
         };
 
         struct ArmConfig {
-            const char* label;
-            bool rr_per_traj;      // RR refresh null vecs every trajectory
-            int rebuild_freq;      // warm MG rebuild every N traj (0 = never)
+            std::string label;
+            bool rr_per_traj;
+            int arm_rebuild_freq;
         };
-        ArmConfig arms[] = {
-            {"Stale",           false,  0},
-            {"Rebuild/2",       false,  2},
-            {"RR+Rebuild/5",    true,   5},
-            {"RR+Rebuild/10",   true,  10},
+        std::vector<ArmConfig> arms = {
+            {"Stale",                                false, 0},
+            {"Rebuild/" + std::to_string(rebuild_freq), false, rebuild_freq},
+            {"RR+Rebuild/" + std::to_string(rebuild_freq), true, rebuild_freq},
         };
-        int n_arms = 4;
+        int n_arms = (int)arms.size();
 
         std::cout << "=== Hybrid Prolongator Refresh Study ===\n";
-        std::cout << "  Stale:          P never refreshed (baseline)\n";
-        std::cout << "  Rebuild/2:      Warm MG rebuild every 2nd trajectory\n";
-        std::cout << "  RR+Rebuild/5:   RR every traj + warm rebuild every 5th\n";
-        std::cout << "  RR+Rebuild/10:  RR every traj + warm rebuild every 10th\n\n";
+        for (auto& a : arms)
+            std::cout << "  " << std::setw(20) << std::left << (a.label + ":")
+                      << (a.rr_per_traj ? "RR every traj" : "no RR")
+                      << "  rebuild=" << (a.arm_rebuild_freq > 0
+                         ? "every " + std::to_string(a.arm_rebuild_freq) : "never") << "\n";
+        std::cout << std::right << "\n";
 
         std::vector<ArmStats> stats(n_arms);
 
@@ -1174,7 +1172,7 @@ int main(int argc, char** argv) {
                 if (res.accepted) {
                     if (c_sw != 0.0) D_arm.compute_clover_field();
 
-                    bool do_rebuild = (ac.rebuild_freq > 0 && (t+1) % ac.rebuild_freq == 0);
+                    bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
 
                     if (do_rebuild) {
                         // Full warm MG rebuild
