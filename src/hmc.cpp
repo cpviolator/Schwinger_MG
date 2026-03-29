@@ -1676,16 +1676,20 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     int inner_step_counter = 0;
 
     auto maybe_refresh_deflation = [&]() {
-        if (params.defl_refresh > 0 && inner_step_counter > 0
-            && inner_step_counter % params.defl_refresh == 0) {
-            // Rebuild coarse operator for current gauge and RR-evolve eigenvectors
+        if (inner_step_counter == 0) return;
+        bool do_full = (params.defl_refresh > 0 &&
+                        inner_step_counter % params.defl_refresh == 0);
+        if (do_full) {
+            // Expensive: rebuild coarse operator + RR evolve + extract generator
             DiracOp D_ref(lat, gauge, mass, wilson_r, c_sw, mu_t);
             OpApply A_ref = [&D_ref](const Vec& s, Vec& d) { D_ref.apply_DdagD(s, d); };
-            // Rebuild sparse coarse op stencil from current gauge
             SparseCoarseOp sac_tmp;
             sac_tmp.build(P, A_ref, lat.ndof);
-            // RR evolve coarse eigenvectors on the new operator
             evolve_coarse_deflation(cdefl, sac_tmp, forecast);
+        } else if (forecast && forecast->history_len >= 2) {
+            // Cheap: apply predicted rotation only (no coarse op rebuild)
+            auto R_pred = forecast_rotation(*forecast);
+            apply_rotation(cdefl.eigvecs, R_pred, (int)cdefl.eigvecs[0].size());
         }
     };
 

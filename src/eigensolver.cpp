@@ -1226,29 +1226,61 @@ ForceEvolveResult force_evolve(
 // Chronological generator forecasting
 // =========================================================================
 
-// Extract Hermitian generator H from unitary rotation U.
-// First-order approximation: H ≈ -i(U - I), Hermitianised as (H + H†)/2.
-// Accurate to O(θ²) when eigenangles θ_j are small.
+// Extract Hermitian generator H = -i log(U) from unitary rotation U.
+// Exact method: diagonalise S = (U - U†)/(2i) to get eigenvectors V and sin(θ),
+// then compute θ_j = atan2(sin θ_j, Re(v_j† U v_j)) for exact angles.
 // U stored as evecs[row][col] from lanczos_eigen.
 void extract_generator(const std::vector<Vec>& U, int k,
                        std::vector<Vec>& H) {
-    H.resize(k, Vec(k, 0.0));
-    cx mi(0, -1);  // -i
-    for (int i = 0; i < k; i++) {
-        for (int j = 0; j < k; j++) {
-            cx u_ij = U[i][j];
-            if (i == j) u_ij -= 1.0;  // U - I
-            H[j][i] = mi * u_ij;     // -i(U - I), stored as H[col][row]
+    // Build Hermitian matrix S = (U - U†)/(2i)  [eigenvalues = sin(θ_j)]
+    std::vector<Vec> S(k, Vec(k, 0.0));
+    for (int r = 0; r < k; r++) {
+        for (int c = 0; c < k; c++) {
+            // U[row][col]: U_rc = U[r][c], U†_rc = conj(U[c][r])
+            cx u_rc = U[r][c];
+            cx ud_rc = std::conj(U[c][r]);
+            S[c][r] = (u_rc - ud_rc) / cx(0, 2);  // (U - U†)/(2i), stored S[col][row]
         }
     }
-    // Hermitianise: H = (H + H†)/2
+    // Enforce exact Hermiticity
     for (int i = 0; i < k; i++) {
         for (int j = i + 1; j < k; j++) {
-            cx avg = 0.5 * (H[j][i] + std::conj(H[i][j]));
-            H[j][i] = avg;
-            H[i][j] = std::conj(avg);
+            cx avg = 0.5 * (S[j][i] + std::conj(S[i][j]));
+            S[j][i] = avg; S[i][j] = std::conj(avg);
         }
-        H[i][i] = std::real(H[i][i]);  // diagonal is real
+        S[i][i] = std::real(S[i][i]);
+    }
+
+    // Diagonalise S: S = V diag(sin θ) V†
+    RVec sin_theta;
+    std::vector<Vec> V;
+    lanczos_eigen(S, k, sin_theta, V);
+    // V[row][col] = row-th component of col-th eigenvector
+
+    // For each eigenvector v_j of S, compute the eigenvalue of U:
+    // u_j = v_j† U v_j = cos(θ_j) + i sin(θ_j)
+    // Then θ_j = atan2(Im(u_j), Re(u_j))
+    RVec theta(k);
+    for (int j = 0; j < k; j++) {
+        cx u_j = 0.0;
+        for (int r = 0; r < k; r++) {
+            cx Uv_r = 0.0;  // (U v_j)_r = Σ_c U[r][c] * V[c][j]
+            for (int c = 0; c < k; c++)
+                Uv_r += U[r][c] * V[c][j];
+            u_j += std::conj(V[r][j]) * Uv_r;  // v_j† U v_j
+        }
+        theta[j] = std::atan2(std::imag(u_j), std::real(u_j));
+    }
+
+    // H = V diag(θ) V†, stored as H[col][row]
+    H.resize(k, Vec(k, 0.0));
+    for (int r = 0; r < k; r++) {
+        for (int c = 0; c < k; c++) {
+            cx sum = 0.0;
+            for (int m = 0; m < k; m++)
+                sum += V[r][m] * theta[m] * std::conj(V[c][m]);
+            H[c][r] = sum;
+        }
     }
 }
 
