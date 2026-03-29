@@ -180,12 +180,14 @@ void MGHierarchy::rebuild_deeper_levels() {
     // Update coarsest-level Ac (used for direct solve)
     levels[n_levels - 1].Ac = intermediate_Ac.back();
 
-    // If sparse coarse is in use, rebuild it too
+    // Optionally rebuild sparse coarse op + re-run TRLM deflation.
+    // Skip this if sparse coarse is only used for inner-force deflation
+    // and that deflation is managed externally (e.g., by the study driver).
+    // The V-cycle preconditioner uses levels[].Ac (dense), not sparse_Ac.
     if (use_sparse_coarse && !geo_prolongators.empty()) {
         auto& P0 = geo_prolongators[0];
         int fine_dim = levels[0].dim;
         sparse_Ac.build(P0, levels[0].op, fine_dim);
-        // Re-run TRLM with warm start from previous deflation vectors
         int n_defl = (int)sparse_Ac.defl_vecs.size();
         if (n_defl > 0)
             sparse_Ac.setup_deflation(n_defl);

@@ -9,6 +9,8 @@
 #include "eigensolver.h"
 #include "smoother.h"
 #include "multigrid.h"
+#include <set>
+#include <sstream>
 #include "solvers.h"
 #include "hmc.h"
 
@@ -215,6 +217,7 @@ int main(int argc, char** argv) {
     bool   forecast_study = false;
     int    rebuild_freq = 5;   // warm MG rebuild period for forecast study
     int    mg_perturb_freq = 0; // perturbation-refresh MG every N inner steps
+    std::string only_arms_str;  // comma-separated arm indices to run (empty=all)
     bool   use_eo = false;
     int    hmc_n_outer = 10;
     int    hmc_n_inner = 5;
@@ -279,6 +282,7 @@ int main(int argc, char** argv) {
         else if (match("--forecast-study")) forecast_study = true;
         else if (match("--rebuild-freq")) rebuild_freq = next_int();
         else if (match("--mg-perturb-freq")) mg_perturb_freq = next_int();
+        else if (match("--only-arms")) only_arms_str = argv[++i];
         else if (match("--even-odd")) use_eo = true;
         else if (match("--hmc-n-outer")) hmc_n_outer = next_int();
         else if (match("--hmc-n-inner")) hmc_n_inner = next_int();
@@ -1108,28 +1112,47 @@ int main(int argc, char** argv) {
             bool rr_per_traj;
             int arm_rebuild_freq;
             int arm_perturb_freq;  // perturbation refresh every N inner steps (0=off)
+            bool lie_forecast;     // use Lie algebra coefficient forecasting between rebuilds
         };
+        std::string rf = std::to_string(rebuild_freq);
         std::vector<ArmConfig> arms = {
-            {"Stale",                                   false, 0, 0},
-            {"Rebuild/" + std::to_string(rebuild_freq), false, rebuild_freq, 0},
-            {"Perturb/1+Rb/" + std::to_string(rebuild_freq), false, rebuild_freq, 1},
-            {"Perturb/2+Rb/" + std::to_string(rebuild_freq), false, rebuild_freq, 2},
-            {"Perturb/5+Rb/" + std::to_string(rebuild_freq), false, rebuild_freq, 5},
+            {"Stale",              false, 0, 0, false},
+            {"Rebuild/" + rf,      false, rebuild_freq, 0, false},
+            {"Perturb/1+Rb/" + rf, false, rebuild_freq, 1, false},
+            {"Perturb/2+Rb/" + rf, false, rebuild_freq, 2, false},
+            {"Perturb/5+Rb/" + rf, false, rebuild_freq, 5, false},
+            {"LieAlg+Rb/" + rf,    false, rebuild_freq, 0, true},
         };
         int n_arms = (int)arms.size();
 
+        // Parse --only-arms "2,3,5" to run subset of arms
+        std::set<int> run_arms;
+        if (!only_arms_str.empty()) {
+            std::istringstream ss(only_arms_str);
+            std::string tok;
+            while (std::getline(ss, tok, ','))
+                run_arms.insert(std::stoi(tok));
+        }
+
         std::cout << "=== Hybrid Prolongator Refresh Study ===\n";
-        for (auto& a : arms)
-            std::cout << "  " << std::setw(22) << std::left << (a.label + ":")
-                      << "perturb=" << (a.arm_perturb_freq > 0
-                         ? "every " + std::to_string(a.arm_perturb_freq) + " inner" : "off")
-                      << "  rebuild=" << (a.arm_rebuild_freq > 0
-                         ? "every " + std::to_string(a.arm_rebuild_freq) + " traj" : "never") << "\n";
+        for (int i = 0; i < n_arms; i++) {
+            bool skip = (!run_arms.empty() && run_arms.find(i) == run_arms.end());
+            std::cout << "  [" << i << "] " << std::setw(22) << std::left << (arms[i].label + ":")
+                      << "perturb=" << (arms[i].arm_perturb_freq > 0
+                         ? "every " + std::to_string(arms[i].arm_perturb_freq) + " inner" : "off")
+                      << "  rebuild=" << (arms[i].arm_rebuild_freq > 0
+                         ? "every " + std::to_string(arms[i].arm_rebuild_freq) + " traj" : "never")
+                      << (skip ? "  [SKIP]" : "") << "\n";
+        }
         std::cout << std::right << "\n";
 
         std::vector<ArmStats> stats(n_arms);
 
         for (int ai = 0; ai < n_arms; ai++) {
+            if (!run_arms.empty() && run_arms.find(ai) == run_arms.end()) {
+                std::cout << "--- " << arms[ai].label << " --- [SKIPPED]\n\n";
+                continue;
+            }
             auto& ac = arms[ai];
             std::cout << "--- " << ac.label << " ---\n";
             std::cout << std::setw(5) << "traj"
@@ -1146,21 +1169,26 @@ int main(int argc, char** argv) {
             std::mt19937 rng_mg_arm(seed + 111);
 
             auto mg_arm = mg;
-            Prolongator* P_arm_ptr = &mg_arm.geo_prolongators[0];
 
             DiracOp D_arm(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
             mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                 D_arm.apply_DdagD(s, d);
             };
-            mg_arm.init_Dv_cache(D_arm);  // initialise Dv for perturbation
+            mg_arm.use_sparse_coarse = false; // preconditioner only — skip sparse rebuild + TRLM
+            mg_arm.init_Dv_cache(D_arm);
 
+            // Preconditioner: uses mg_arm (differs between arms)
             std::function<Vec(const Vec&)> pc_arm = [&mg_arm](const Vec& b) -> Vec {
                 return mg_arm.precondition(b);
             };
 
-            CoarseDeflState cdefl_arm;
-            cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
-            cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
+            LieAlgebraForecast lie_forecast;
+            if (ac.lie_forecast) lie_forecast.init(k_null);
+
+            // Inner force: empty cdefl disables low-mode force.
+            // Shared P from original mg — never modified, identical across arms.
+            // This ensures the MD trajectory is identical; only CG speed differs.
+            CoarseDeflState cdefl_arm;  // empty = no lowmode force
 
             // Set per-arm perturbation frequency
             MGMultiScaleParams arm_params = ms_params;
@@ -1172,7 +1200,7 @@ int main(int argc, char** argv) {
                 auto t0 = Clock::now();
                 auto res = hmc_trajectory_mg_multiscale(
                     gauge_arm, lat, mass, wilson_r, arm_params,
-                    cdefl_arm, *P_arm_ptr, pc_arm, rng_arm,
+                    cdefl_arm, P, pc_arm, rng_arm,
                     nullptr, nullptr,
                     ac.arm_perturb_freq > 0 ? &mg_arm : nullptr);
                 double dt = Dur(Clock::now() - t0).count();
@@ -1185,41 +1213,45 @@ int main(int argc, char** argv) {
                 // Update clover cache if gauge changed
                 if (res.accepted && c_sw != 0.0) D_arm.compute_clover_field();
 
-                // Periodic warm MG rebuild (regardless of acceptance — always on current gauge)
+                // === MG preconditioner update only (cdefl_arm stays empty) ===
+                // The MG hierarchy (mg_arm) is updated for preconditioner quality.
+                // Inner force uses shared P and empty cdefl — identical across arms.
                 bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
                 if (do_rebuild) {
+                    // Full warm MG rebuild (preconditioner only)
                     auto warm_vecs = mg_arm.null_vecs_l0;
                     mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
                         k_null, coarse_block, 5, rng_mg_arm,
                         warm_vecs, w_cycle, 3, 3);
-                    mg_arm.setup_sparse_coarse(
-                        [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); },
-                        ndof, n_defl);
                     mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                         D_arm.apply_DdagD(s, d);
                     };
                     mg_arm.init_Dv_cache(D_arm);
-                    P_arm_ptr = &mg_arm.geo_prolongators[0];
-                    cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
-                    cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
+                    if (ac.lie_forecast) lie_forecast.reset();
+                } else if (res.accepted && ac.lie_forecast) {
+                    // RR rotation + Lie algebra forecast
+                    auto rr = mg_arm.refresh_prolongator_rr(D_arm);
+                    mg_arm.init_Dv_cache(D_arm);
+                    std::vector<Vec> H;
+                    extract_generator(rr.rotation, k_null, H);
+                    RVec alpha = lie_forecast.decompose(H);
+                    lie_forecast.store(alpha);
+                    if (lie_forecast.history_len >= 2) {
+                        auto R_pred = lie_forecast.predict_rotation();
+                        if (!R_pred.empty())
+                            apply_rotation(mg_arm.null_vecs_l0, R_pred, ndof);
+                        mg_arm.geo_prolongators[0].build_from_vectors(mg_arm.null_vecs_l0);
+                        mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
+                        mg_arm.rebuild_deeper_levels();
+                    }
                 } else if (res.accepted && ac.rr_per_traj) {
-                    // RR refresh of null vecs (only on accepted — gauge changed)
+                    // RR rotation of null vecs
                     mg_arm.refresh_prolongator_rr(D_arm);
                     mg_arm.init_Dv_cache(D_arm);
-                    if (!mg_arm.use_sparse_coarse) {
-                        OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
-                        mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
-                    }
-                    evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                 } else if (res.accepted) {
-                    // Stale P — only rebuild Galerkin + deflation
-                    mg_arm.levels[0].Ac.build(D_arm, *P_arm_ptr);
+                    // Stale P — only rebuild Galerkin coarse ops for mg_arm
+                    mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
                     mg_arm.rebuild_deeper_levels();
-                    if (!mg_arm.use_sparse_coarse) {
-                        OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
-                        mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
-                    }
-                    evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                 }
 
                 std::cout << std::fixed
