@@ -249,15 +249,44 @@ void MGHierarchy::refresh_prolongator_forecast(const DiracOp& D_new,
 }
 
 // ---------------------------------------------------------------
-// FEAST-based prolongator refresh with warm start
+// FEAST-based prolongator refresh with warm start + MG preconditioning
+// Uses the STALE MG preconditioner to accelerate FEAST's shifted solves,
+// then rebuilds P + Galerkin from the fresh eigenvectors.
 // ---------------------------------------------------------------
 void MGHierarchy::refresh_prolongator_feast(const DiracOp& D_new, double feast_emax) {
     int k = (int)null_vecs_l0.size();
+    int n = D_new.lat.ndof;
 
-    // Warm-start FEAST from previous null vectors
-    auto new_vecs = compute_near_null_space_feast(D_new, k, feast_emax, &null_vecs_l0);
+    // Use the current (stale) MG as preconditioner for FEAST's shifted solves
+    std::function<Vec(const Vec&)> mg_precond = [this](const Vec& b) -> Vec {
+        return this->precondition(b);
+    };
 
-    null_vecs_l0 = std::move(new_vecs);
+    OpApply A = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
+
+    double emax = feast_emax;
+    if (emax <= 0.0) {
+        // Quick estimate from previous eigenvalues or Lanczos
+        auto quick = trlm_eigensolver(A, n, k, std::min(2*k + 10, n), 50, 1e-4);
+        if (!quick.eigvals.empty())
+            emax = 3.0 * quick.eigvals.back();
+        else
+            emax = 1.0;
+    }
+
+    int M0 = std::min((int)(1.5 * k) + 4, n);
+    auto result = feast_eigensolver(A, n, 0.0, emax, M0, 8, 1e-8, 20,
+                                     &null_vecs_l0, &mg_precond);
+
+    int n_found = std::min((int)result.eigvecs.size(), k);
+    if (n_found >= k) {
+        null_vecs_l0.assign(result.eigvecs.begin(), result.eigvecs.begin() + k);
+    } else {
+        // Pad with old vectors if FEAST found fewer
+        null_vecs_l0.resize(k);
+        for (int i = 0; i < n_found; i++)
+            null_vecs_l0[i] = std::move(result.eigvecs[i]);
+    }
 
     auto& P = geo_prolongators[0];
     P.build_from_vectors(null_vecs_l0);

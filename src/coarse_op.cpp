@@ -29,7 +29,9 @@ void SparseCoarseOp::setup_deflation(int n_ev, int n_kr,
             std::cout << "  FEAST auto Emax=" << emax << "\n";
         }
         int M0 = std::min((int)(1.5 * n_ev) + 4, dim);
-        auto result = feast_eigensolver(op, dim, 0.0, emax, M0, 8, tol, 20);
+        // Warm-start from existing deflation vectors if available
+        const std::vector<Vec>* warm = (!defl_vecs.empty()) ? &defl_vecs : nullptr;
+        auto result = feast_eigensolver(op, dim, 0.0, emax, M0, 8, tol, 20, warm);
 
         // Keep only n_ev smallest (FEAST may find more)
         int n_found = std::min((int)result.eigvecs.size(), n_ev);

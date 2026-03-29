@@ -18,16 +18,30 @@ extern "C" {
 static void feast_init(int* fpm) { feastinit_(fpm); }
 
 // ---------------------------------------------------------------
-// BiCGStab for shifted system (z*I - A)*x = b
+// Preconditioned BiCGStab for shifted system (z*I - A)*x = b
 // z is complex, A is Hermitian → shifted op is non-Hermitian
+// precond: optional left preconditioner M^{-1} (e.g., MG V-cycle)
 // ---------------------------------------------------------------
 Vec shifted_solve(const OpApply& A, cx z, const Vec& b, int n,
-                  int max_iter, double tol) {
+                  int max_iter, double tol,
+                  const std::function<Vec(const Vec&)>* precond) {
     // Shifted operator: T*x = z*x - A*x
     auto T = [&](const Vec& src, Vec& dst) {
-        A(src, dst);  // dst = A*src
+        A(src, dst);
         for (int i = 0; i < n; i++)
-            dst[i] = z * src[i] - dst[i];  // dst = z*src - A*src
+            dst[i] = z * src[i] - dst[i];
+    };
+
+    // Preconditioner: M^{-1} approximation (identity if none)
+    auto apply_precond = [&](const Vec& src) -> Vec {
+        if (precond) {
+            // The preconditioner approximates (D†D)^{-1}, not (zI-D†D)^{-1}.
+            // For BiCGStab, any SPD preconditioner helps. The MG V-cycle
+            // approximates (D†D)^{-1} which is a good preconditioner for
+            // the shifted system when |z| is not too large.
+            return (*precond)(src);
+        }
+        return src;
     };
 
     Vec x = zeros(n);
@@ -35,7 +49,7 @@ Vec shifted_solve(const OpApply& A, cx z, const Vec& b, int n,
     T(x, r);
     for (int i = 0; i < n; i++) r[i] = b[i] - r[i];
 
-    Vec r_hat = r;  // BiCGStab shadow residual
+    Vec r_hat = r;
     cx rho_old = 1.0, alpha = 1.0, omega = 1.0;
     Vec v = zeros(n), p = zeros(n);
 
@@ -50,7 +64,9 @@ Vec shifted_solve(const OpApply& A, cx z, const Vec& b, int n,
         for (int i = 0; i < n; i++)
             p[i] = r[i] + beta * (p[i] - omega * v[i]);
 
-        T(p, v);
+        // Preconditioned: p_hat = M^{-1} p, then v = T p_hat
+        Vec p_hat = apply_precond(p);
+        T(p_hat, v);
         alpha = rho / dot(r_hat, v);
 
         Vec s(n);
@@ -58,16 +74,18 @@ Vec shifted_solve(const OpApply& A, cx z, const Vec& b, int n,
 
         double s_norm = norm(s);
         if (s_norm / b_norm < tol) {
-            for (int i = 0; i < n; i++) x[i] += alpha * p[i];
+            for (int i = 0; i < n; i++) x[i] += alpha * p_hat[i];
             return x;
         }
 
+        // Preconditioned: s_hat = M^{-1} s, then t = T s_hat
+        Vec s_hat = apply_precond(s);
         Vec t(n);
-        T(s, t);
+        T(s_hat, t);
         omega = dot(t, s) / dot(t, t);
 
         for (int i = 0; i < n; i++) {
-            x[i] += alpha * p[i] + omega * s[i];
+            x[i] += alpha * p_hat[i] + omega * s_hat[i];
             r[i] = s[i] - omega * t[i];
         }
 
@@ -86,7 +104,8 @@ TRLMResult feast_eigensolver(
     const OpApply& A, int n,
     double Emin, double Emax, int M0,
     int n_contour, double tol, int max_iter,
-    const std::vector<Vec>* warm_start)
+    const std::vector<Vec>* warm_start,
+    const std::function<Vec(const Vec&)>* precond)
 {
     TRLMResult result;
     result.converged = false;
@@ -167,7 +186,7 @@ TRLMResult feast_eigensolver(
                     rhs[i] = cx(workc[2*(col*n + i)], workc[2*(col*n + i) + 1]);
 
                 // Solve (z*I - A)*x = rhs
-                Vec sol = shifted_solve(A, z_shift, rhs, n);
+                Vec sol = shifted_solve(A, z_shift, rhs, n, 500, 1e-12, precond);
                 total_solves++;
 
                 // Write solution back to workc

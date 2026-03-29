@@ -1131,18 +1131,16 @@ int main(int argc, char** argv) {
 
         struct ArmConfig {
             std::string label;
-            bool rr_per_traj;
             int arm_rebuild_freq;
-            int arm_perturb_freq;
-            bool lie_forecast;
-            bool use_feast;        // FEAST warm-start refresh between rebuilds
+            bool feast_coarse_evolve;
+            bool feast_fine_refresh;    // FEAST warm-start for fine null space (MG-preconditioned)
         };
         std::string rf = std::to_string(rebuild_freq);
         std::vector<ArmConfig> arms = {
-            {"Stale",              false, 0, 0, false, false},
-            {"Rebuild/" + rf,      false, rebuild_freq, 0, false, false},
-            {"FEAST/traj",         false, 0, 0, false, true},
-            {"FEAST+Rb/" + rf,     false, rebuild_freq, 0, false, true},
+            {"Stale",                     0, false, false},
+            {"Rebuild/" + rf,             rebuild_freq, false, false},
+            {"FEAST-MG/traj",             0, false, true},
+            {"FEAST-MG+Rb/" + rf,         rebuild_freq, false, true},
         };
         int n_arms = (int)arms.size();
 
@@ -1158,11 +1156,10 @@ int main(int argc, char** argv) {
         std::cout << "=== Prolongator Refresh Study ===\n";
         for (int i = 0; i < n_arms; i++) {
             bool skip = (!run_arms.empty() && run_arms.find(i) == run_arms.end());
-            std::cout << "  [" << i << "] " << std::setw(22) << std::left << (arms[i].label + ":");
-            if (arms[i].use_feast) std::cout << "FEAST/traj";
-            else if (arms[i].arm_perturb_freq > 0) std::cout << "perturb/" << arms[i].arm_perturb_freq;
-            else std::cout << "no refresh";
-            std::cout << "  rebuild=" << (arms[i].arm_rebuild_freq > 0
+            std::cout << "  [" << i << "] " << std::setw(22) << std::left << (arms[i].label + ":")
+                      << (arms[i].feast_fine_refresh ? "FEAST-MG fine+coarse  " : "")
+                      << (arms[i].feast_coarse_evolve ? "FEAST coarse  " : "")
+                      << "rebuild=" << (arms[i].arm_rebuild_freq > 0
                          ? "every " + std::to_string(arms[i].arm_rebuild_freq) + " traj" : "never")
                       << (skip ? "  [SKIP]" : "") << "\n";
         }
@@ -1200,32 +1197,20 @@ int main(int argc, char** argv) {
             // keep use_sparse_coarse = true (stencil rebuilt cheaply, no TRLM)
             mg_arm.init_Dv_cache(D_arm);
 
-            // Preconditioner: uses mg_arm (differs between arms)
             std::function<Vec(const Vec&)> pc_arm = [&mg_arm](const Vec& b) -> Vec {
                 return mg_arm.precondition(b);
             };
 
-            LieAlgebraForecast lie_forecast;
-            if (ac.lie_forecast) lie_forecast.init(k_null);
-
-            // Inner force: empty cdefl disables low-mode force.
-            // Shared P from original mg — never modified, identical across arms.
-            // This ensures the MD trajectory is identical; only CG speed differs.
-            CoarseDeflState cdefl_arm;  // empty = no lowmode force
-
-            // Set per-arm perturbation frequency
-            MGMultiScaleParams arm_params = ms_params;
-            arm_params.mg_perturb_freq = ac.arm_perturb_freq;
+            // Inner force: empty cdefl — identical physics across arms
+            CoarseDeflState cdefl_arm;
 
             for (int t = 0; t < n_traj; t++) {
                 if (c_sw != 0.0) D_arm.compute_clover_field();
 
                 auto t0 = Clock::now();
                 auto res = hmc_trajectory_mg_multiscale(
-                    gauge_arm, lat, mass, wilson_r, arm_params,
-                    cdefl_arm, P, pc_arm, rng_arm,
-                    nullptr, nullptr,
-                    ac.arm_perturb_freq > 0 ? &mg_arm : nullptr);
+                    gauge_arm, lat, mass, wilson_r, ms_params,
+                    cdefl_arm, P, pc_arm, rng_arm);
                 double dt = Dur(Clock::now() - t0).count();
 
                 if (res.accepted) stats[ai].accept++;
@@ -1233,15 +1218,12 @@ int main(int argc, char** argv) {
                 stats[ai].cg_sum += res.highmode_cg_iters;
                 stats[ai].time_sum += dt;
 
-                // Update clover cache if gauge changed
                 if (res.accepted && c_sw != 0.0) D_arm.compute_clover_field();
 
-                // === MG preconditioner update only (cdefl_arm stays empty) ===
-                // The MG hierarchy (mg_arm) is updated for preconditioner quality.
-                // Inner force uses shared P and empty cdefl — identical across arms.
+                // === MG preconditioner refresh (only — inner force unchanged) ===
                 bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
                 if (do_rebuild) {
-                    // Warm rebuild: null vecs + prolongator + Galerkin + sparse coarse + TRLM
+                    // Warm rebuild: TRLM inverse iteration for fine null space
                     auto warm_vecs = mg_arm.null_vecs_l0;
                     mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
                         k_null, coarse_block, 5, rng_mg_arm,
@@ -1249,38 +1231,22 @@ int main(int argc, char** argv) {
                     mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                         D_arm.apply_DdagD(s, d);
                     };
-                    // Full sparse coarse setup including TRLM (once per rebuild)
+                    // TRLM for coarse deflation (initial setup after rebuild)
                     mg_arm.setup_sparse_coarse(
                         [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); },
                         ndof, n_defl);
-                    mg_arm.init_Dv_cache(D_arm);
-                    if (ac.lie_forecast) lie_forecast.reset();
-                } else if (res.accepted && ac.lie_forecast) {
-                    // RR rotation + Lie algebra forecast
-                    auto rr = mg_arm.refresh_prolongator_rr(D_arm);
-                    mg_arm.init_Dv_cache(D_arm);
-                    std::vector<Vec> H;
-                    extract_generator(rr.rotation, k_null, H);
-                    RVec alpha = lie_forecast.decompose(H);
-                    lie_forecast.store(alpha);
-                    if (lie_forecast.history_len >= 2) {
-                        auto R_pred = lie_forecast.predict_rotation();
-                        if (!R_pred.empty())
-                            apply_rotation(mg_arm.null_vecs_l0, R_pred, ndof);
-                        mg_arm.geo_prolongators[0].build_from_vectors(mg_arm.null_vecs_l0);
-                        mg_arm.rebind_prolongator_lambdas();
-                        mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
-                        mg_arm.rebuild_deeper_levels();
-                    }
-                } else if (res.accepted && ac.use_feast) {
-                    // FEAST warm-start refresh of null space
+                } else if (res.accepted && ac.feast_fine_refresh) {
+                    // FEAST warm-start: use stale MG to precondition shifted solves,
+                    // recompute fine eigenvectors, rebuild P + Galerkin + coarse defl
                     mg_arm.refresh_prolongator_feast(D_arm, feast_emax);
-                } else if (res.accepted && ac.rr_per_traj) {
-                    // RR rotation of null vecs
-                    mg_arm.refresh_prolongator_rr(D_arm);
-                    mg_arm.init_Dv_cache(D_arm);
+                    // Also FEAST warm-start the coarse deflation
+                    mg_arm.sparse_Ac.setup_deflation(n_defl, 0, 100, 1e-10, "feast", feast_emax);
+                } else if (res.accepted && ac.feast_coarse_evolve) {
+                    mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
+                    mg_arm.rebuild_deeper_levels();
+                    mg_arm.sparse_Ac.setup_deflation(n_defl, 0, 100, 1e-10, "feast", feast_emax);
                 } else if (res.accepted) {
-                    // Stale P — only rebuild Galerkin coarse ops for mg_arm
+                    // Stale P — only rebuild Galerkin coarse ops
                     mg_arm.levels[0].Ac.build(D_arm, mg_arm.geo_prolongators[0]);
                     mg_arm.rebuild_deeper_levels();
                 }
