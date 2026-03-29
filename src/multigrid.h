@@ -47,6 +47,9 @@ struct MGHierarchy {
     bool w_cycle;
     // Store level-0 null vectors for warm-start rebuilds
     std::vector<Vec> null_vecs_l0;
+    // Cached D*null_vec for perturbation-based evolution (force_evolve)
+    std::vector<Vec> Dv_l0;
+    std::vector<double> null_evals_l0; // Rayleigh quotients of null vecs
     // Sparse coarse operator (optional, for large coarse grids)
     SparseCoarseOp sparse_Ac;
     bool use_sparse_coarse = false;
@@ -81,6 +84,17 @@ struct MGHierarchy {
     // Rotates null_vecs_l0 by R_pred, rebuilds P, Galerkin coarse ops, cascades.
     void refresh_prolongator_forecast(const DiracOp& D_new,
                                       const std::vector<Vec>& R_pred);
+
+    // Perturbation-based null space evolution (Strategy C).
+    // Uses delta_D from gauge update to rotate null vecs via force_evolve.
+    // Zero full matvecs — only k sparse delta_D applications.
+    // Rebuilds P + Galerkin from rotated null vecs.
+    void refresh_prolongator_perturbation(
+        const DiracOp& D_new,
+        const std::array<RVec, 2>& pi, double dt);
+
+    // Initialise Dv cache: compute D*v for each null vector
+    void init_Dv_cache(const DiracOp& D);
 };
 
 std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,

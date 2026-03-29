@@ -1096,8 +1096,8 @@ int main(int argc, char** argv) {
         ms_params.defl_refresh = hmc_defl_refresh;
         ms_params.use_eo = use_eo;
 
-        // --- Phase 3: Aggressive per-CG prolongator refresh study ---
-        // Arms: RR refresh every 1/2/3 CG calls vs full MG rebuild every 2 traj
+        // --- Phase 3: Hybrid prolongator refresh study ---
+        // Compare: stale P, RR-only, warm rebuild, RR + periodic warm rebuild
         struct ArmStats {
             int accept = 0;
             double dH_sum = 0, cg_sum = 0, time_sum = 0;
@@ -1105,24 +1105,22 @@ int main(int argc, char** argv) {
 
         struct ArmConfig {
             const char* label;
-            int cg_refresh_freq;   // 0 = no per-CG refresh
-            int traj_rebuild_freq; // 0 = never full rebuild
+            bool rr_per_traj;      // RR refresh null vecs every trajectory
+            int rebuild_freq;      // warm MG rebuild every N traj (0 = never)
         };
         ArmConfig arms[] = {
-            {"Stale",         0, 0},
-            {"RR/1CG",        1, 0},
-            {"RR/2CG",        2, 0},
-            {"RR/3CG",        3, 0},
-            {"Rebuild/2traj", 0, 2},
+            {"Stale",           false,  0},
+            {"Rebuild/2",       false,  2},
+            {"RR+Rebuild/5",    true,   5},
+            {"RR+Rebuild/10",   true,  10},
         };
-        int n_arms = 5;
+        int n_arms = 4;
 
-        std::cout << "=== Aggressive Per-CG Prolongator Refresh Study ===\n";
-        std::cout << "  Stale:         P never refreshed within trajectory\n";
-        std::cout << "  RR/1CG:        RR refresh P before every CG solve\n";
-        std::cout << "  RR/2CG:        RR refresh P before every 2nd CG solve\n";
-        std::cout << "  RR/3CG:        RR refresh P before every 3rd CG solve\n";
-        std::cout << "  Rebuild/2traj: Full warm MG rebuild every 2nd trajectory\n\n";
+        std::cout << "=== Hybrid Prolongator Refresh Study ===\n";
+        std::cout << "  Stale:          P never refreshed (baseline)\n";
+        std::cout << "  Rebuild/2:      Warm MG rebuild every 2nd trajectory\n";
+        std::cout << "  RR+Rebuild/5:   RR every traj + warm rebuild every 5th\n";
+        std::cout << "  RR+Rebuild/10:  RR every traj + warm rebuild every 10th\n\n";
 
         std::vector<ArmStats> stats(n_arms);
 
@@ -1149,6 +1147,7 @@ int main(int argc, char** argv) {
             mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                 D_arm.apply_DdagD(s, d);
             };
+            mg_arm.init_Dv_cache(D_arm);  // initialise Dv for perturbation
 
             std::function<Vec(const Vec&)> pc_arm = [&mg_arm](const Vec& b) -> Vec {
                 return mg_arm.precondition(b);
@@ -1158,29 +1157,13 @@ int main(int argc, char** argv) {
             cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
             cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
 
-            // Per-CG refresh counter and callback
-            int cg_call_count = 0;
-            std::function<void()> pre_solve_fn;
-            if (ac.cg_refresh_freq > 0) {
-                pre_solve_fn = [&]() {
-                    cg_call_count++;
-                    if (cg_call_count % ac.cg_refresh_freq == 0) {
-                        if (c_sw != 0.0) D_arm.compute_clover_field();
-                        mg_arm.refresh_prolongator_rr(D_arm);
-                    }
-                };
-            }
-
             for (int t = 0; t < n_traj; t++) {
-                cg_call_count = 0;  // reset per trajectory
                 if (c_sw != 0.0) D_arm.compute_clover_field();
 
                 auto t0 = Clock::now();
                 auto res = hmc_trajectory_mg_multiscale(
                     gauge_arm, lat, mass, wilson_r, ms_params,
-                    cdefl_arm, *P_arm_ptr, pc_arm, rng_arm,
-                    nullptr,  // no deflation forecast
-                    ac.cg_refresh_freq > 0 ? &pre_solve_fn : nullptr);
+                    cdefl_arm, *P_arm_ptr, pc_arm, rng_arm);
                 double dt = Dur(Clock::now() - t0).count();
 
                 if (res.accepted) stats[ai].accept++;
@@ -1191,18 +1174,11 @@ int main(int argc, char** argv) {
                 if (res.accepted) {
                     if (c_sw != 0.0) D_arm.compute_clover_field();
 
-                    // Between-trajectory: always rebuild Galerkin + deflation
-                    mg_arm.levels[0].Ac.build(D_arm, *P_arm_ptr);
-                    mg_arm.rebuild_deeper_levels();
-                    if (!mg_arm.use_sparse_coarse) {
-                        OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
-                        mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
-                    }
-                    evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
+                    bool do_rebuild = (ac.rebuild_freq > 0 && (t+1) % ac.rebuild_freq == 0);
 
-                    // Full MG rebuild if configured
-                    if (ac.traj_rebuild_freq > 0 && (t+1) % ac.traj_rebuild_freq == 0) {
-                        auto warm_vecs = mg_arm.null_vecs_l0; // save before overwrite
+                    if (do_rebuild) {
+                        // Full warm MG rebuild
+                        auto warm_vecs = mg_arm.null_vecs_l0;
                         mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
                             k_null, coarse_block, 5, rng_mg_arm,
                             warm_vecs, w_cycle, 3, 3);
@@ -1212,9 +1188,28 @@ int main(int argc, char** argv) {
                         mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                             D_arm.apply_DdagD(s, d);
                         };
+                        mg_arm.init_Dv_cache(D_arm);
                         P_arm_ptr = &mg_arm.geo_prolongators[0];
                         cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
                         cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
+                    } else if (ac.rr_per_traj) {
+                        // RR refresh of null vecs
+                        mg_arm.refresh_prolongator_rr(D_arm);
+                        mg_arm.init_Dv_cache(D_arm);  // refresh Dv cache
+                        if (!mg_arm.use_sparse_coarse) {
+                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                            mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
+                        }
+                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
+                    } else {
+                        // Stale P — only rebuild Galerkin + deflation
+                        mg_arm.levels[0].Ac.build(D_arm, *P_arm_ptr);
+                        mg_arm.rebuild_deeper_levels();
+                        if (!mg_arm.use_sparse_coarse) {
+                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                            mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
+                        }
+                        evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                     }
                 }
 

@@ -240,6 +240,62 @@ void MGHierarchy::refresh_prolongator_forecast(const DiracOp& D_new,
     rebuild_deeper_levels();
 }
 
+// ---------------------------------------------------------------
+// Initialise Dv cache: D*v for each null vector
+// ---------------------------------------------------------------
+void MGHierarchy::init_Dv_cache(const DiracOp& D) {
+    int k = (int)null_vecs_l0.size();
+    int ndof = D.lat.ndof;
+    Dv_l0.resize(k);
+    null_evals_l0.resize(k);
+    for (int i = 0; i < k; i++) {
+        Dv_l0[i].resize(ndof);
+        D.apply(null_vecs_l0[i], Dv_l0[i]);
+        // Rayleigh quotient: v†(D†D)v = ||Dv||²
+        null_evals_l0[i] = std::real(dot(Dv_l0[i], Dv_l0[i]));
+    }
+}
+
+// ---------------------------------------------------------------
+// Perturbation-based null space evolution (Strategy C)
+// Uses force_evolve: delta_D from gauge update (momentum pi, step dt)
+// Zero full matvecs — only k sparse delta_D applications
+// ---------------------------------------------------------------
+void MGHierarchy::refresh_prolongator_perturbation(
+    const DiracOp& D_new,
+    const std::array<RVec, 2>& pi, double dt)
+{
+    int k = (int)null_vecs_l0.size();
+    int ndof = D_new.lat.ndof;
+
+    // delta_D = D_new - D_old (from gauge update exp(i*dt*pi))
+    auto apply_dD = [&](const Vec& src, Vec& dst) {
+        D_new.apply_delta_D(src, dst, pi, dt);
+    };
+    // delta_D† = gamma5 * delta_D(-pi*dt) * gamma5
+    // For the perturbation formula we need delta_D†, but force_evolve
+    // doesn't actually use it separately — it computes dot(dDv_i, Dv_j)
+    // which only needs delta_D applied forward. So pass a dummy.
+    auto apply_dD_dag = apply_dD;  // not used by force_evolve in practice
+
+    auto result = force_evolve(null_vecs_l0, null_evals_l0, Dv_l0,
+                                apply_dD, apply_dD_dag, ndof);
+
+    null_vecs_l0 = std::move(result.eigvecs);
+    null_evals_l0 = std::move(result.eigvals);
+    Dv_l0 = std::move(result.Dv);
+
+    // Rebuild prolongator from rotated null vectors
+    auto& P = geo_prolongators[0];
+    P.build_from_vectors(null_vecs_l0);
+
+    // Rebuild level-0 coarse operator: Ac = P†(D†D)P
+    levels[0].Ac.build(D_new, P);
+
+    // Cascade to deeper levels
+    rebuild_deeper_levels();
+}
+
 // Prolong a coarsest-level vector all the way to the fine grid
 // by chaining prolong_fn calls from coarsest to finest.
 Vec MGHierarchy::prolong_to_fine(const Vec& v_coarse) const {
