@@ -138,6 +138,18 @@ struct DiracOp {
         apply_dag(tmp, dst);
     }
 
+    // γ₅D: Hermitian operator. Eigenvalues are real.
+    // Near-zero eigenvalues of γ₅D correspond to near-null vectors of D†D.
+    // Cost: ONE D application (vs TWO for D†D).
+    void apply_g5D(const Vec& src, Vec& dst) const {
+        apply_impl(src, dst, mu_t);  // dst = D*src
+        // Apply γ₅ = σ₃ = diag(1,-1): flip sign of second spinor component
+        int V = lat.V;
+        #pragma omp parallel for schedule(static) if(V > OMP_MIN_SIZE)
+        for (int s = 0; s < V; s++)
+            dst[2*s+1] = -dst[2*s+1];
+    }
+
     // Compute δD v = (D_new - D_old) v, where D_new has gauge links
     // U_μ(x) → exp(i dt π_μ(x)) U_μ(x).
     // Only the hopping terms change; the mass/diagonal term cancels.

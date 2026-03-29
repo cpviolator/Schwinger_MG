@@ -255,38 +255,16 @@ void MGHierarchy::refresh_prolongator_forecast(const DiracOp& D_new,
 // ---------------------------------------------------------------
 void MGHierarchy::refresh_prolongator_feast(const DiracOp& D_new, double feast_emax) {
     int k = (int)null_vecs_l0.size();
-    int n = D_new.lat.ndof;
 
-    // Use the current (stale) MG as preconditioner for FEAST's shifted solves
+    // Use stale MG as preconditioner for FEAST's shifted BiCGStab
     std::function<Vec(const Vec&)> mg_precond = [this](const Vec& b) -> Vec {
         return this->precondition(b);
     };
 
-    OpApply A = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
-
-    double emax = feast_emax;
-    if (emax <= 0.0) {
-        // Quick estimate from previous eigenvalues or Lanczos
-        auto quick = trlm_eigensolver(A, n, k, std::min(2*k + 10, n), 50, 1e-4);
-        if (!quick.eigvals.empty())
-            emax = 3.0 * quick.eigvals.back();
-        else
-            emax = 1.0;
-    }
-
-    int M0 = std::min((int)(1.5 * k) + 4, n);
-    auto result = feast_eigensolver(A, n, 0.0, emax, M0, 8, 1e-8, 20,
-                                     &null_vecs_l0, &mg_precond);
-
-    int n_found = std::min((int)result.eigvecs.size(), k);
-    if (n_found >= k) {
-        null_vecs_l0.assign(result.eigvecs.begin(), result.eigvecs.begin() + k);
-    } else {
-        // Pad with old vectors if FEAST found fewer
-        null_vecs_l0.resize(k);
-        for (int i = 0; i < n_found; i++)
-            null_vecs_l0[i] = std::move(result.eigvecs[i]);
-    }
+    // FEAST on γ₅D with MG preconditioning and warm start from previous null vecs
+    auto new_vecs = compute_near_null_space_feast(D_new, k, feast_emax,
+                                                   &null_vecs_l0, &mg_precond);
+    null_vecs_l0 = std::move(new_vecs);
 
     auto& P = geo_prolongators[0];
     P.build_from_vectors(null_vecs_l0);
@@ -496,34 +474,54 @@ std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,
     return null_vecs;
 }
 
-// FEAST-based near-null space: find k smallest eigenvectors of D†D directly.
+// FEAST-based near-null space using γ₅D (Hermitian, 1 matvec per application).
+// Eigenvalues of γ₅D near zero → eigenvectors are the near-null vectors of D†D.
+// Spectral window [-ε, ε] captures both positive and negative eigenvalues near zero.
+// M0 should be >= 2k since eigenvalues come in ±pairs.
 std::vector<Vec> compute_near_null_space_feast(
     const DiracOp& D, int k, double feast_emax,
-    const std::vector<Vec>* warm_start)
+    const std::vector<Vec>* warm_start,
+    const std::function<Vec(const Vec&)>* precond)
 {
     int n = D.lat.ndof;
-    OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
+    // Use γ₅D: Hermitian, cost = ONE D application per matvec
+    OpApply g5D = [&D](const Vec& s, Vec& d) { D.apply_g5D(s, d); };
 
     double emax = feast_emax;
     if (emax <= 0.0) {
-        auto quick = trlm_eigensolver(A, n, k, std::min(2*k + 10, n), 50, 1e-4);
+        // Quick estimate: find smallest eigenvalues of D†D via TRLM,
+        // then ε = sqrt(λ_max) since eigenvalues of γ₅D are ±sqrt(λ(D†D))
+        OpApply DdD = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
+        auto quick = trlm_eigensolver(DdD, n, k, std::min(2*k + 10, n), 50, 1e-4);
         if (!quick.eigvals.empty())
-            emax = 3.0 * quick.eigvals.back();
+            emax = 2.0 * std::sqrt(quick.eigvals.back());
         else
             emax = 1.0;
-        std::cout << "  FEAST null space: auto Emax=" << std::scientific
-                  << std::setprecision(4) << emax << "\n";
+        std::cout << "  FEAST γ₅D: auto window [-" << std::fixed << std::setprecision(4)
+                  << emax << ", " << emax << "]\n";
     }
 
-    int M0 = std::min((int)(1.5 * k) + 4, n);
-    auto result = feast_eigensolver(A, n, 0.0, emax, M0, 8, 1e-8, 20, warm_start);
+    // Search window [-emax, emax] for eigenvalues near zero
+    // M0 >= 2k since eigenvalues come in ±pairs
+    int M0 = std::min(3 * k + 4, n);
+    auto result = feast_eigensolver(g5D, n, -emax, emax, M0, 8, 1e-8, 20,
+                                     warm_start, precond);
 
-    int n_found = std::min((int)result.eigvecs.size(), k);
+    int n_found = (int)result.eigvecs.size();
     if (n_found < k)
-        std::cerr << "  FEAST null space: found " << n_found << " of " << k << " requested\n";
+        std::cerr << "  FEAST γ₅D: found " << n_found << " of " << k << " requested\n";
 
-    std::vector<Vec> null_vecs(result.eigvecs.begin(),
-                                result.eigvecs.begin() + std::min(n_found, k));
+    // Sort by |eigenvalue| (smallest |λ| = nearest to null space)
+    std::vector<int> idx(n_found);
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(),
+              [&](int a, int b) { return std::abs(result.eigvals[a]) < std::abs(result.eigvals[b]); });
+
+    // Take the k eigenvectors with smallest |λ|
+    int take = std::min(n_found, k);
+    std::vector<Vec> null_vecs(take);
+    for (int i = 0; i < take; i++)
+        null_vecs[i] = std::move(result.eigvecs[idx[i]]);
     if ((int)null_vecs.size() < k) {
         std::mt19937 rng_pad(12345);
         while ((int)null_vecs.size() < k)

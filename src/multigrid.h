@@ -107,10 +107,13 @@ std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,
                                          int outer_iters, std::mt19937& rng,
                                          const std::vector<Vec>* warm_start = nullptr);
 
-// FEAST-based: find k smallest eigenvectors of D†D as near-null vectors
+// FEAST-based: find eigenvectors of γ₅D near zero as near-null vectors.
+// Uses γ₅D (Hermitian, 1 matvec) instead of D†D (2 matvecs).
+// precond: optional MG preconditioner for shifted solves (2× speedup).
 std::vector<Vec> compute_near_null_space_feast(
     const DiracOp& D, int k, double feast_emax = 0.0,
-    const std::vector<Vec>* warm_start = nullptr);
+    const std::vector<Vec>* warm_start = nullptr,
+    const std::function<Vec(const Vec&)>* precond = nullptr);
 
 std::vector<Vec> compute_near_null_space_generic(
     const OpApply& A, int dim, int k, int outer_iters, std::mt19937& rng,
