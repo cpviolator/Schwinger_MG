@@ -180,17 +180,15 @@ void MGHierarchy::rebuild_deeper_levels() {
     // Update coarsest-level Ac (used for direct solve)
     levels[n_levels - 1].Ac = intermediate_Ac.back();
 
-    // Optionally rebuild sparse coarse op + re-run TRLM deflation.
-    // Skip this if sparse coarse is only used for inner-force deflation
-    // and that deflation is managed externally (e.g., by the study driver).
-    // The V-cycle preconditioner uses levels[].Ac (dense), not sparse_Ac.
+    // Rebuild sparse coarse stencil (cheap) but NOT TRLM deflation (expensive).
+    // TRLM only runs at explicit setup_sparse_coarse calls (warm rebuild points).
+    // The coarse_solve uses deflated CG with existing deflation vectors on the
+    // rebuilt stencil — the deflation may be slightly stale but still effective.
     if (use_sparse_coarse && !geo_prolongators.empty()) {
         auto& P0 = geo_prolongators[0];
         int fine_dim = levels[0].dim;
         sparse_Ac.build(P0, levels[0].op, fine_dim);
-        int n_defl = (int)sparse_Ac.defl_vecs.size();
-        if (n_defl > 0)
-            sparse_Ac.setup_deflation(n_defl);
+        // Note: defl_vecs/defl_vals NOT updated here — kept from last TRLM
     }
 }
 

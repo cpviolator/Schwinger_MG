@@ -1078,9 +1078,10 @@ int main(int argc, char** argv) {
         OpApply A_mg = [&D_mg](const Vec& s, Vec& d){ D_mg.apply_DdagD(s, d); };
         auto mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
                                       coarse_block, 20, rng, w_cycle, 3, 3, true);
-        // For the study: use dense LU at coarsest level (no sparse CG/TRLM)
-        // This keeps rebuild cost low and V-cycle behaviour consistent.
-        // (setup_sparse_coarse skipped — coarsest solve uses Ac.solve() = dense LU)
+        // Set up sparse coarse with deflated CG for coarsest-level solve.
+        // TRLM runs once here. Subsequent rebuild_deeper_levels calls only
+        // rebuild the stencil (cheap), not TRLM (expensive).
+        mg.setup_sparse_coarse(A_mg, ndof, n_defl);
 
         auto& P = mg.geo_prolongators[0];
         std::function<Vec(const Vec&)> mg_precond = [&mg](const Vec& b) -> Vec {
@@ -1177,7 +1178,7 @@ int main(int argc, char** argv) {
             mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                 D_arm.apply_DdagD(s, d);
             };
-            mg_arm.use_sparse_coarse = false;
+            // keep use_sparse_coarse = true (stencil rebuilt cheaply, no TRLM)
             mg_arm.init_Dv_cache(D_arm);
 
             // Preconditioner: uses mg_arm (differs between arms)
@@ -1221,18 +1222,18 @@ int main(int argc, char** argv) {
                 // Inner force uses shared P and empty cdefl — identical across arms.
                 bool do_rebuild = (ac.arm_rebuild_freq > 0 && (t+1) % ac.arm_rebuild_freq == 0);
                 if (do_rebuild) {
-                    // Warm rebuild: null vecs + prolongator + Galerkin
+                    // Warm rebuild: null vecs + prolongator + Galerkin + sparse coarse + TRLM
                     auto warm_vecs = mg_arm.null_vecs_l0;
                     mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
                         k_null, coarse_block, 5, rng_mg_arm,
                         warm_vecs, w_cycle, 3, 3);
-                    mg_arm.use_sparse_coarse = false;
-                    // Force dense direct solve at coarsest level (no sparse CG)
-                    int last_lev = (int)mg_arm.levels.size() - 1;
-                    mg_arm.levels[last_lev].coarse_solve = nullptr;
                     mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                         D_arm.apply_DdagD(s, d);
                     };
+                    // Full sparse coarse setup including TRLM (once per rebuild)
+                    mg_arm.setup_sparse_coarse(
+                        [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); },
+                        ndof, n_defl);
                     mg_arm.init_Dv_cache(D_arm);
                     if (ac.lie_forecast) lie_forecast.reset();
                 } else if (res.accepted && ac.lie_forecast) {
