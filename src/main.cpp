@@ -1143,7 +1143,7 @@ int main(int argc, char** argv) {
             std::mt19937 rng_mg_arm(seed + 111);
 
             auto mg_arm = mg;
-            auto& P_arm = mg_arm.geo_prolongators[0];
+            Prolongator* P_arm_ptr = &mg_arm.geo_prolongators[0];
 
             DiracOp D_arm(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
             mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
@@ -1178,7 +1178,7 @@ int main(int argc, char** argv) {
                 auto t0 = Clock::now();
                 auto res = hmc_trajectory_mg_multiscale(
                     gauge_arm, lat, mass, wilson_r, ms_params,
-                    cdefl_arm, P_arm, pc_arm, rng_arm,
+                    cdefl_arm, *P_arm_ptr, pc_arm, rng_arm,
                     nullptr,  // no deflation forecast
                     ac.cg_refresh_freq > 0 ? &pre_solve_fn : nullptr);
                 double dt = Dur(Clock::now() - t0).count();
@@ -1192,25 +1192,27 @@ int main(int argc, char** argv) {
                     if (c_sw != 0.0) D_arm.compute_clover_field();
 
                     // Between-trajectory: always rebuild Galerkin + deflation
-                    mg_arm.levels[0].Ac.build(D_arm, P_arm);
+                    mg_arm.levels[0].Ac.build(D_arm, *P_arm_ptr);
                     mg_arm.rebuild_deeper_levels();
                     if (!mg_arm.use_sparse_coarse) {
                         OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
-                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        mg_arm.sparse_Ac.build(*P_arm_ptr, An, ndof);
                     }
                     evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
 
                     // Full MG rebuild if configured
                     if (ac.traj_rebuild_freq > 0 && (t+1) % ac.traj_rebuild_freq == 0) {
+                        auto warm_vecs = mg_arm.null_vecs_l0; // save before overwrite
                         mg_arm = build_mg_hierarchy_warm(D_arm, mg_levels, block_size,
                             k_null, coarse_block, 5, rng_mg_arm,
-                            mg_arm.null_vecs_l0, w_cycle, 3, 3);
+                            warm_vecs, w_cycle, 3, 3);
                         mg_arm.setup_sparse_coarse(
                             [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); },
                             ndof, n_defl);
                         mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
                             D_arm.apply_DdagD(s, d);
                         };
+                        P_arm_ptr = &mg_arm.geo_prolongators[0];
                         cdefl_arm.eigvecs = mg_arm.sparse_Ac.defl_vecs;
                         cdefl_arm.eigvals = mg_arm.sparse_Ac.defl_vals;
                     }
