@@ -993,14 +993,16 @@ int main(int argc, char** argv) {
         using Clock = std::chrono::high_resolution_clock;
         using Dur = std::chrono::duration<double>;
 
-        // Study parameters (use CLI values where available, defaults match plan)
+        // Study parameters (use CLI values where available)
         int n_traj = hmc_traj > 0 ? hmc_traj : 50;
-        int n_defl = n_defl_vecs > 0 ? n_defl_vecs : 8;
+        int n_defl = n_defl_vecs > 0 ? n_defl_vecs : 16;
         int ndof = lat.ndof;
-        if (hmc_n_outer == 10) hmc_n_outer = 5;   // default for study
+        if (hmc_n_outer == 10) hmc_n_outer = 5;
         if (hmc_n_inner == 5)  hmc_n_inner = 3;
         if (hmc_defl_refresh == 0) hmc_defl_refresh = 3;
         if (hmc_therm == 20) hmc_therm = 50;
+        if (k_null == 4) k_null = 8;        // more null vecs for better MG
+        if (max_iter == 300) max_iter = 1000; // remove CG ceiling
         int total_steps = hmc_n_outer * hmc_n_inner;
 
         std::cout << "=== Eigenspace Forecasting Comparative Study ===\n\n";
@@ -1092,6 +1094,7 @@ int main(int argc, char** argv) {
         ms_params.mu_t = mu_t;
         ms_params.outer_type = OuterIntegrator::FGI;
         ms_params.defl_refresh = hmc_defl_refresh;
+        ms_params.use_eo = use_eo;
 
         // --- Phase 3: Three-arm prolongator study ---
         // Arm A: Stale P (current code — P never refreshed)
@@ -1130,7 +1133,17 @@ int main(int argc, char** argv) {
             auto mg_arm = mg;
             auto& P_arm = mg_arm.geo_prolongators[0];
 
-            // Each arm needs its own preconditioner closure capturing its own mg
+            // CRITICAL: Create a persistent DiracOp that references gauge_arm.
+            // Since gauge_arm is mutated in-place by HMC, D_arm automatically
+            // sees the current gauge links through its const reference.
+            DiracOp D_arm(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
+
+            // Rebind level-0 fine operator to use D_arm (current gauge)
+            mg_arm.levels[0].op = [&D_arm](const Vec& s, Vec& d) {
+                D_arm.apply_DdagD(s, d);
+            };
+
+            // Preconditioner closure uses mg_arm (which now has correct level-0 op)
             std::function<Vec(const Vec&)> pc_arm = [&mg_arm](const Vec& b) -> Vec {
                 return mg_arm.precondition(b);
             };
@@ -1154,24 +1167,34 @@ int main(int argc, char** argv) {
                 stats[arm].time_sum += dt;
 
                 if (res.accepted) {
-                    DiracOp Dn(lat, gauge_arm, mass, wilson_r, c_sw, mu_t);
-                    OpApply An = [&Dn](const Vec& s, Vec& d){ Dn.apply_DdagD(s, d); };
+                    // Recompute clover field if needed (gauge changed in-place)
+                    if (c_sw != 0.0) D_arm.compute_clover_field();
 
                     if (arm == 0) {
                         // Arm A: stale P — only rebuild sparse coarse op for deflation
-                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        // But level-0 op is current (D_arm references gauge_arm)
+                        mg_arm.levels[0].Ac.build(D_arm, P_arm);
+                        mg_arm.rebuild_deeper_levels();
+                        // Sparse coarse op was rebuilt inside rebuild_deeper_levels if use_sparse_coarse
+                        if (!mg_arm.use_sparse_coarse) {
+                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                            mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        }
                         evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                     } else if (arm == 1) {
                         // Arm B: full RR refresh of prolongator every trajectory
-                        mg_arm.refresh_prolongator_rr(Dn);
-                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        mg_arm.refresh_prolongator_rr(D_arm);
+                        // sparse_Ac and deflation rebuilt inside refresh via rebuild_deeper_levels
+                        if (!mg_arm.use_sparse_coarse) {
+                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                            mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        }
                         evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                     } else {
                         // Arm C: forecast rotation, periodic full RR for history
                         bool do_rr = (t % rr_period == 0) || (ns_forecast.history_len < 2);
                         if (do_rr) {
-                            auto rr = mg_arm.refresh_prolongator_rr(Dn);
-                            // Extract generator and store in forecast history
+                            auto rr = mg_arm.refresh_prolongator_rr(D_arm);
                             std::vector<Vec> H;
                             extract_generator(rr.rotation, (int)rr.rotation.size(), H);
                             ns_forecast.k = (int)rr.rotation.size();
@@ -1183,11 +1206,13 @@ int main(int argc, char** argv) {
                                 ns_forecast.H_history.insert(ns_forecast.H_history.begin(), std::move(H));
                             }
                         } else {
-                            // Cheap: forecast rotation only
                             auto R_pred = forecast_rotation(ns_forecast);
-                            mg_arm.refresh_prolongator_forecast(Dn, R_pred);
+                            mg_arm.refresh_prolongator_forecast(D_arm, R_pred);
                         }
-                        mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        if (!mg_arm.use_sparse_coarse) {
+                            OpApply An = [&D_arm](const Vec& s, Vec& d){ D_arm.apply_DdagD(s, d); };
+                            mg_arm.sparse_Ac.build(P_arm, An, ndof);
+                        }
                         evolve_coarse_deflation(cdefl_arm, mg_arm.sparse_Ac);
                     }
                 }
