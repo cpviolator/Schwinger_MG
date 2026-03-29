@@ -105,6 +105,11 @@ std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,
                                          int outer_iters, std::mt19937& rng,
                                          const std::vector<Vec>* warm_start = nullptr);
 
+// FEAST-based: find k smallest eigenvectors of D†D as near-null vectors
+std::vector<Vec> compute_near_null_space_feast(
+    const DiracOp& D, int k, double feast_emax = 0.0,
+    const std::vector<Vec>* warm_start = nullptr);
+
 std::vector<Vec> compute_near_null_space_generic(
     const OpApply& A, int dim, int k, int outer_iters, std::mt19937& rng,
     const std::vector<Vec>* warm_start = nullptr);

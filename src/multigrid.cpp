@@ -1,4 +1,5 @@
 #include "multigrid.h"
+#include "feast_solver.h"
 
 // =====================================================================
 //  MULTIGRID V-CYCLE (one-level)
@@ -444,6 +445,42 @@ std::vector<Vec> compute_near_null_space(const DiracOp& D, int k,
         if (nv > 1e-14) scale(null_vecs[i], cx(1.0/nv));
     }
 
+    return null_vecs;
+}
+
+// FEAST-based near-null space: find k smallest eigenvectors of D†D directly.
+std::vector<Vec> compute_near_null_space_feast(
+    const DiracOp& D, int k, double feast_emax,
+    const std::vector<Vec>* warm_start)
+{
+    int n = D.lat.ndof;
+    OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
+
+    double emax = feast_emax;
+    if (emax <= 0.0) {
+        auto quick = trlm_eigensolver(A, n, k, std::min(2*k + 10, n), 50, 1e-4);
+        if (!quick.eigvals.empty())
+            emax = 3.0 * quick.eigvals.back();
+        else
+            emax = 1.0;
+        std::cout << "  FEAST null space: auto Emax=" << std::scientific
+                  << std::setprecision(4) << emax << "\n";
+    }
+
+    int M0 = std::min((int)(1.5 * k) + 4, n);
+    auto result = feast_eigensolver(A, n, 0.0, emax, M0, 8, 1e-8, 20, warm_start);
+
+    int n_found = std::min((int)result.eigvecs.size(), k);
+    if (n_found < k)
+        std::cerr << "  FEAST null space: found " << n_found << " of " << k << " requested\n";
+
+    std::vector<Vec> null_vecs(result.eigvecs.begin(),
+                                result.eigvecs.begin() + std::min(n_found, k));
+    if ((int)null_vecs.size() < k) {
+        std::mt19937 rng_pad(12345);
+        while ((int)null_vecs.size() < k)
+            null_vecs.push_back(random_vec(n, rng_pad));
+    }
     return null_vecs;
 }
 

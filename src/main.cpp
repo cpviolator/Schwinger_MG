@@ -725,11 +725,23 @@ int main(int argc, char** argv) {
         DiracOp D_mg(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A_mg = [&D_mg](const Vec& s, Vec& d) { D_mg.apply_DdagD(s, d); };
         std::mt19937 rng_mg(seed + 111);
-        auto mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
-                                      coarse_block, 20, rng_mg, w_cycle,
-                                      3, 3, true);
 
-        // Setup sparse coarse operator + TRLM deflation
+        MGHierarchy mg;
+        if (eigensolver == "feast") {
+            // FEAST: compute eigenvectors of D†D as null space, then build MG
+            std::cout << "  Computing null space via FEAST...\n";
+            auto feast_null = compute_near_null_space_feast(D_mg, k_null, feast_emax);
+            // Build hierarchy with FEAST null vectors (0 inverse iters — just use them)
+            mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
+                                    coarse_block, 0, rng_mg, w_cycle,
+                                    3, 3, true, &feast_null);
+        } else {
+            mg = build_mg_hierarchy(D_mg, mg_levels, block_size, k_null,
+                                    coarse_block, 20, rng_mg, w_cycle,
+                                    3, 3, true);
+        }
+
+        // Setup sparse coarse operator + deflation
         mg.setup_sparse_coarse(A_mg, lat.ndof, n_defl, 1e-12, 200, eigensolver, feast_emax);
 
         int cdim = mg.sparse_Ac.dim;
