@@ -148,8 +148,11 @@ struct TrackingState {
     int total_ritz_absorbed = 0;
     int total_solutions_absorbed = 0;
 
+    int total_force_evals = 0;  // accumulates across trajectories
+
     void reset_trajectory() {
         has_prev_solution = false;
+        total_force_evals += force_eval_count;
         force_eval_count = 0;
     }
 

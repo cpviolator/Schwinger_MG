@@ -114,23 +114,28 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     int saved_count = 0;
     for (int traj = 0; traj < total_traj; traj++) {
         auto t0 = Clock::now();
-        // Rebuild MG operator before trajectory (Galerkin, keeps null vecs)
+        // MG maintenance: always update operator, optionally refresh null vecs
+        // --rebuild-freq N: rebuild prolongator from pool every N traj (0=never)
         if (use_mg && traj > 0) {
             D_mg = std::make_unique<DiracOp>(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
-            mg->levels[0].op = D_mg->as_DdagD_op();
-            mg->levels[0].Ac.build(*D_mg, mg->geo_prolongators[0]);
-            mg->rebuild_deeper_levels();
-        }
+            int rb = hcfg.rebuild_freq;
 
-        // Refresh MG prolongator from tracking pool every 5 trajectories
-        if (use_mg && tracking && tracking->tracker_initialized && traj > 0 && traj % 5 == 0) {
-            auto pool_vecs = tracking->get_null_vectors();
-            if ((int)pool_vecs.size() >= mcfg.k_null) {
-                std::mt19937 rng_rb(lcfg.seed + 5000 + traj);
-                *mg = build_mg_hierarchy(*D_mg, mcfg.mg_levels, mcfg.block_size,
-                    mcfg.k_null, mcfg.resolved_coarse_block(), 0, rng_rb,
-                    mcfg.w_cycle, 3, 3, false, &pool_vecs);
-                if (mcfg.symmetric_mg) mg->set_symmetric(0.8);
+            if (rb > 0 && traj % rb == 0 && tracking && tracking->tracker_initialized) {
+                // Pool refresh: rebuild prolongator from tracked eigenvectors
+                auto pool_vecs = tracking->get_null_vectors();
+                if ((int)pool_vecs.size() >= mcfg.k_null) {
+                    std::mt19937 rng_rb(lcfg.seed + 5000 + traj);
+                    *mg = build_mg_hierarchy(*D_mg, mcfg.mg_levels, mcfg.block_size,
+                        mcfg.k_null, mcfg.resolved_coarse_block(), 0, rng_rb,
+                        mcfg.w_cycle, 3, 3, false, &pool_vecs);
+                    if (mcfg.symmetric_mg) mg->set_symmetric(0.8);
+                    std::cout << "  [pool refresh at traj " << traj << "]\n";
+                }
+            } else {
+                // Galerkin only: update coarse op for new gauge, keep null vecs
+                mg->levels[0].op = D_mg->as_DdagD_op();
+                mg->levels[0].Ac.build(*D_mg, mg->geo_prolongators[0]);
+                mg->rebuild_deeper_levels();
             }
         }
 
@@ -178,7 +183,7 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
 
     if (tracking && tracking->tracker_initialized) {
         std::cout << "\n=== Tracking Summary ===\n";
-        std::cout << "Force evaluations: " << tracking->force_eval_count << "\n";
+        std::cout << "Force evaluations: " << tracking->total_force_evals + tracking->force_eval_count << "\n";
         std::cout << "Ritz vectors absorbed: " << tracking->total_ritz_absorbed << "\n";
         std::cout << "Solution vectors absorbed: " << tracking->total_solutions_absorbed << "\n";
         std::cout << "Pool size: " << tracking->pool_capacity << "\n";
