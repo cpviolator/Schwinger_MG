@@ -7,6 +7,7 @@
 #include <numeric>
 #include <array>
 #include <string>
+#include <iostream>
 
 // Forward declaration — defined in eigensolver.h
 void lanczos_eigen(std::vector<Vec>& A_cols, int n, RVec& evals, std::vector<Vec>& evecs);

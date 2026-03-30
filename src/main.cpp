@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     bool test_deflation = false;
     bool test_sparse_coarse = false;
     bool hmc_benchmark = false;
+    bool feast_benchmark = false;
     int cycle_type = -1;
 
     // --- Parse args ---
@@ -240,6 +241,7 @@ int main(int argc, char** argv) {
         else if (match("--hmc-eigen-forecast")) hcfg.eigen_forecast = true;
         else if (match("--forecast-study")) forecast_study = true;
         else if (match("--hmc-benchmark")) hmc_benchmark = true;
+        else if (match("--feast-benchmark")) feast_benchmark = true;
         else if (match("--rebuild-freq")) hcfg.rebuild_freq = next_int();
         else if (match("--mg-perturb-freq")) hcfg.mg_perturb_freq = next_int();
         else if (match("--eigensolver")) scfg.eigensolver  = argv[++i];
@@ -323,6 +325,9 @@ int main(int argc, char** argv) {
     // --- Mode dispatch ---
     if (verify_forces_flag)
         return run_verify_forces(gauge, lcfg, scfg, hcfg);
+
+    if (feast_benchmark)
+        return run_feast_benchmark(gauge, lat, lcfg, mcfg, scfg, hcfg, rng);
 
     if (hmc_benchmark)
         return run_hmc_benchmark(gauge, lat, lcfg, mcfg, scfg, hcfg, rng);

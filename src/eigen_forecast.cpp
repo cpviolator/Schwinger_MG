@@ -77,21 +77,29 @@ std::vector<Vec> forecast_rotation(const EigenForecastState& state) {
     int k = state.k;
     int n = state.history_len;
 
+    // Need at least 1 generator to extrapolate
+    if (n < 1 || k <= 0) return {};
+
     // Extrapolate H_pred
     std::vector<Vec> H_pred(k, Vec(k, 0.0));
     if (n >= 3) {
-        // Quadratic: 3 H[0] - 3 H[1] + H[2]
+        // Quadratic: 3 H[n-1] - 3 H[n-2] + H[n-3]
+        auto& H0 = state.H_history[n-1];
+        auto& H1 = state.H_history[n-2];
+        auto& H2 = state.H_history[n-3];
         for (int i = 0; i < k; i++)
             for (int j = 0; j < k; j++)
-                H_pred[i][j] = 3.0*state.H_history[0][i][j]
-                              - 3.0*state.H_history[1][i][j]
-                              +     state.H_history[2][i][j];
+                H_pred[i][j] = 3.0*H0[i][j] - 3.0*H1[i][j] + H2[i][j];
+    } else if (n >= 2) {
+        // Linear: 2 H[n-1] - H[n-2]
+        auto& H0 = state.H_history[n-1];
+        auto& H1 = state.H_history[n-2];
+        for (int i = 0; i < k; i++)
+            for (int j = 0; j < k; j++)
+                H_pred[i][j] = 2.0*H0[i][j] - H1[i][j];
     } else {
-        // Linear: 2 H[0] - H[1]
-        for (int i = 0; i < k; i++)
-            for (int j = 0; j < k; j++)
-                H_pred[i][j] = 2.0*state.H_history[0][i][j]
-                              -     state.H_history[1][i][j];
+        // Constant: just use the last generator (n == 1)
+        H_pred = state.H_history[0];
     }
 
     // Compute R = exp(i H_pred) via eigendecomposition of Hermitian H_pred

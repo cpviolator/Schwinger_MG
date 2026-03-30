@@ -14,3 +14,10 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
                       const LatticeConfig& lcfg, const MGConfig& mcfg,
                       const SolverConfig& scfg, const HMCConfig& hcfg,
                       std::mt19937& rng);
+
+// FEAST vs TRLM null-space benchmark: compare cold/warm start
+// for both TRLM (inverse iteration) and FEAST on evolved gauge configs.
+int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
+                        const LatticeConfig& lcfg, const MGConfig& mcfg,
+                        const SolverConfig& scfg, const HMCConfig& hcfg,
+                        std::mt19937& rng);

@@ -6,6 +6,7 @@
 #include "prolongator.h"
 #include "coarse_op.h"
 #include "eigensolver.h"
+#include "feast_solver.h"
 #include "linalg.h"
 #include <iostream>
 #include <iomanip>
@@ -326,5 +327,243 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     std::cout << "force_check         = " << (force_pass ? "PASS" : "FAIL") << "\n";
 
     if (!force_pass) { std::cerr << "FAIL: force verification\n"; return 1; }
+    return 0;
+}
+
+// =====================================================================
+//  FEAST vs TRLM Eigenspace Construction Benchmark
+//  On a sequence of evolved gauge configs, compare:
+//    1. TRLM cold (20 inverse iterations from random) — baseline
+//    2. FEAST warm (seeded from previous eigenspace) — test case
+//  Measures: build time, FEAST convergence (solves/iters), eigenvalue
+//  residuals, and MG preconditioner quality (CG iterations).
+// =====================================================================
+int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
+                        const LatticeConfig& lcfg, const MGConfig& mcfg,
+                        const SolverConfig& scfg, const HMCConfig& hcfg,
+                        std::mt19937& rng)
+{
+    int L = lcfg.L;
+    double mass = lcfg.mass;
+    double wilson_r = lcfg.wilson_r;
+    int k_null = mcfg.k_null;
+    int block_size = mcfg.block_size;
+    int cb = mcfg.resolved_coarse_block();
+    int n_traj = hcfg.n_traj > 0 ? hcfg.n_traj : 10;
+    double feast_emax = scfg.feast_emax > 0 ? scfg.feast_emax : 0.0; // 0 = auto
+
+    std::cout << "=== FEAST vs TRLM Eigenspace Construction Benchmark ===\n";
+    std::cout << "L=" << L << "  DOF=" << lat.ndof
+              << "  mass=" << mass << "  beta=" << hcfg.beta << "\n";
+    std::cout << "block=" << block_size << "  k_null=" << k_null
+              << "  feast_emax=" << (feast_emax > 0 ? std::to_string(feast_emax) : "auto")
+              << "\n";
+    std::cout << "trajectories=" << n_traj << "  therm=" << hcfg.n_therm << "\n\n";
+
+    HMCParams hmc_params;
+    hmc_params.beta = hcfg.beta;
+    hmc_params.tau = hcfg.tau;
+    hmc_params.n_steps = hcfg.n_steps;
+    hmc_params.cg_maxiter = scfg.max_iter;
+    hmc_params.cg_tol = scfg.tol;
+    hmc_params.c_sw = lcfg.c_sw;
+    hmc_params.mu_t = lcfg.mu_t;
+
+    // Thermalise
+    if (hcfg.n_therm > 0) {
+        std::cout << "--- Thermalisation (" << hcfg.n_therm << " trajectories) ---\n";
+        for (int t = 0; t < hcfg.n_therm; t++) {
+            hmc_trajectory(gauge, lat, mass, wilson_r, hmc_params, rng);
+            if ((t+1) % 10 == 0 || t == hcfg.n_therm - 1)
+                std::cout << "  traj " << t+1 << "  <plaq>=" << std::fixed
+                          << std::setprecision(4) << gauge.avg_plaq() << "\n";
+        }
+        std::cout << "\n";
+    }
+
+    // Helper: compute max eigenvalue residual ||Av - λv|| / ||Av|| for null vecs
+    auto max_residual = [&](const std::vector<Vec>& vecs, const DiracOp& D) -> double {
+        OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
+        double max_res = 0;
+        for (int i = 0; i < (int)vecs.size(); i++) {
+            Vec Av(lat.ndof);
+            A(vecs[i], Av);
+            double rq = std::real(dot(vecs[i], Av));
+            Vec r = Av;
+            axpy(cx(-rq), vecs[i], r);
+            double res = norm(r) / std::max(norm(Av), 1e-30);
+            max_res = std::max(max_res, res);
+        }
+        return max_res;
+    };
+
+    // Helper: measure CG quality with a given set of null vectors
+    std::mt19937 rng_mg(lcfg.seed + 111);
+    auto measure_cg = [&](const std::vector<Vec>& null_vecs, const DiracOp& D) -> int {
+        auto mg_test = build_mg_hierarchy(D, mcfg.mg_levels, block_size, k_null,
+                                           cb, 0, rng_mg, mcfg.w_cycle, 3, 3, false,
+                                           &null_vecs);
+        mg_test.set_symmetric(0.8);
+        auto precond = [&mg_test](const Vec& b) -> Vec { return mg_test.precondition(b); };
+        OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
+        std::mt19937 rng_rhs(lcfg.seed + 777);
+        Vec rhs = random_vec(lat.ndof, rng_rhs);
+        auto res = cg_solve_precond(A, lat.ndof, rhs, precond, scfg.max_iter, scfg.tol);
+        return res.iterations;
+    };
+
+    // =====================================================================
+    //  Eigenvector tracking through MD trajectory
+    //  Compare: stale, RR-every-step, forecast+RR
+    //  This is a theoretical best-case study — how well CAN we track?
+    // =====================================================================
+
+    // Build initial eigenvectors with TRLM
+    DiracOp D0(lat, gauge, mass, wilson_r, lcfg.c_sw, lcfg.mu_t);
+    std::mt19937 rng_init(lcfg.seed + 111);
+
+    // Use TRLM to get k_null true eigenpairs of D†D
+    OpApply A0 = D0.as_DdagD_op();
+    int n_ev = k_null;
+    auto trlm_init = trlm_eigensolver(A0, lat.ndof, n_ev, 0, 200, 1e-10);
+    if (!trlm_init.converged) {
+        std::cerr << "Initial TRLM failed\n"; return 1;
+    }
+
+    std::cout << "Initial TRLM: " << n_ev << " eigenpairs, residual="
+              << std::scientific << std::setprecision(2) << max_residual(trlm_init.eigvecs, D0)
+              << "\n";
+    std::cout << "  Eigenvalues:";
+    for (int i = 0; i < n_ev; i++)
+        std::cout << " " << std::scientific << std::setprecision(4) << trlm_init.eigvals[i];
+    std::cout << "\n\n";
+
+    // Generate momenta for the MD trajectory
+    MomentumField mom(lat);
+    mom.randomise(rng);
+    int n_md_steps = hcfg.n_steps > 0 ? hcfg.n_steps : 20;
+    double dt = hcfg.tau / n_md_steps;
+
+    std::cout << "MD trajectory: " << n_md_steps << " steps, dt=" << std::fixed
+              << std::setprecision(4) << dt << ", tau=" << hcfg.tau << "\n\n";
+
+    // Three copies of eigenvectors for tracking
+    auto evecs_stale = trlm_init.eigvecs;     // never updated
+    auto evals_stale = trlm_init.eigvals;
+    auto evecs_rr = trlm_init.eigvecs;        // RR at every step
+    auto evals_rr = trlm_init.eigvals;
+    auto evecs_fc = trlm_init.eigvecs;        // forecast + RR
+    auto evals_fc = trlm_init.eigvals;
+
+    // Forecast state for generator extrapolation
+    EigenForecastState forecast;
+
+    // Header
+    std::cout << std::setw(5) << "step" << std::setw(8) << "plaq"
+              << "  |  Stale              |  RR-every-step       |  Forecast+RR\n";
+    std::cout << std::setw(13) << ""
+              << "  |  max_res   ev0      |  max_res   ev0      |  max_res   ev0\n";
+    std::cout << std::string(83, '-') << "\n";
+
+    // Initial state
+    std::cout << std::setw(5) << 0
+              << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
+              << "  | " << std::scientific << std::setprecision(2) << max_residual(evecs_stale, D0)
+              << "  " << std::setprecision(4) << evals_stale[0]
+              << "  | " << std::setprecision(2) << max_residual(evecs_rr, D0)
+              << "  " << std::setprecision(4) << evals_rr[0]
+              << "  | " << std::setprecision(2) << max_residual(evecs_fc, D0)
+              << "  " << std::setprecision(4) << evals_fc[0]
+              << "\n";
+
+    for (int step = 0; step < n_md_steps; step++) {
+        // Gauge update: U → exp(i dt π) U
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+
+        DiracOp D(lat, gauge, mass, wilson_r, lcfg.c_sw, lcfg.mu_t);
+        OpApply A = D.as_DdagD_op();
+
+        // Update momentum with gauge force (leapfrog-like)
+        std::array<RVec, 2> gf;
+        gauge_force(gauge, hcfg.beta, gf);
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                mom.pi[mu][s] += dt * gf[mu][s];
+
+        // --- Stale: measure quality only ---
+        double res_stale = max_residual(evecs_stale, D);
+
+        // --- RR every step ---
+        auto rr_res = rr_evolve(A, evecs_rr, lat.ndof);
+        evecs_rr = std::move(rr_res.eigvecs);
+        evals_rr = std::move(rr_res.eigvals);
+        double res_rr = rr_res.max_residual;
+
+        // --- Forecast + RR ---
+        // Step 1: If we have history, forecast the rotation and pre-rotate
+        if (forecast.history_len > 0) {
+            auto R_pred = forecast_rotation(forecast);
+            if (!R_pred.empty())
+                apply_rotation(evecs_fc, R_pred, lat.ndof);
+        }
+        // Step 2: RR to correct any prediction error
+        auto rr_fc = rr_evolve(A, evecs_fc, lat.ndof);
+        // Step 3: Extract generator and store in forecast state
+        if (!rr_fc.rotation.empty()) {
+            std::vector<Vec> H_cols;
+            extract_generator(rr_fc.rotation, n_ev, H_cols);
+            forecast.k = n_ev;
+            forecast.H_history.push_back(H_cols);
+            forecast.history_len++;
+            if (forecast.history_len > EigenForecastState::max_history) {
+                forecast.H_history.erase(forecast.H_history.begin());
+                forecast.history_len = EigenForecastState::max_history;
+            }
+        }
+        evecs_fc = std::move(rr_fc.eigvecs);
+        evals_fc = std::move(rr_fc.eigvals);
+        double res_fc = rr_fc.max_residual;
+
+        std::cout << std::setw(5) << step + 1
+                  << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
+                  << "  | " << std::scientific << std::setprecision(2) << res_stale
+                  << "  " << std::setprecision(4) << evals_stale[0]
+                  << "  | " << std::setprecision(2) << res_rr
+                  << "  " << std::setprecision(4) << evals_rr[0]
+                  << "  | " << std::setprecision(2) << res_fc
+                  << "  " << std::setprecision(4) << evals_fc[0]
+                  << "\n";
+    }
+
+    // Final comparison: compute true eigenvalues with fresh TRLM
+    DiracOp D_final(lat, gauge, mass, wilson_r, lcfg.c_sw, lcfg.mu_t);
+    OpApply A_final = D_final.as_DdagD_op();
+    auto trlm_final = trlm_eigensolver(A_final, lat.ndof, n_ev, 0, 200, 1e-10);
+
+    std::cout << std::string(83, '-') << "\n";
+    std::cout << "True eigenvalues (fresh TRLM):";
+    for (int i = 0; i < n_ev; i++)
+        std::cout << " " << std::scientific << std::setprecision(4) << trlm_final.eigvals[i];
+    std::cout << "\n";
+
+    std::cout << "\n=== TRACKING QUALITY SUMMARY ===\n";
+    std::cout << "  Stale:         max_res=" << std::scientific << std::setprecision(2)
+              << max_residual(evecs_stale, D_final)
+              << "  ev0_err=" << std::abs(evals_stale[0] - trlm_final.eigvals[0]) << "\n";
+    std::cout << "  RR/step:       max_res=" << max_residual(evecs_rr, D_final)
+              << "  ev0_err=" << std::abs(evals_rr[0] - trlm_final.eigvals[0]) << "\n";
+    std::cout << "  Forecast+RR:   max_res=" << max_residual(evecs_fc, D_final)
+              << "  ev0_err=" << std::abs(evals_fc[0] - trlm_final.eigvals[0]) << "\n";
+
+    // Also measure MG quality with each
+    std::cout << "\n  MG quality (CG iters with each eigenspace):\n";
+    std::cout << "    Stale:       CG=" << measure_cg(evecs_stale, D_final) << "\n";
+    std::cout << "    RR/step:     CG=" << measure_cg(evecs_rr, D_final) << "\n";
+    std::cout << "    Forecast+RR: CG=" << measure_cg(evecs_fc, D_final) << "\n";
+    std::cout << "    Fresh TRLM:  CG=" << measure_cg(trlm_final.eigvecs, D_final) << "\n";
+
     return 0;
 }
