@@ -152,6 +152,10 @@ struct TrackingState {
         has_prev_solution = false;
         force_eval_count = 0;
     }
+
+    // Extract the best n_ev vectors from the tracker pool for MG prolongator.
+    // Returns empty if tracker not initialized.
+    std::vector<Vec> get_null_vectors() const;
 };
 
 HMCResult hmc_trajectory(

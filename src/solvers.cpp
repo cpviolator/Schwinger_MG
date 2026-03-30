@@ -424,7 +424,8 @@ CGTrackedResult cg_solve_tracked(
     const Vec* x0,
     const std::function<Vec(const Vec&)>* precond,
     int max_iter, double tol,
-    int n_ritz)
+    int n_ritz,
+    int max_lanczos_vecs)
 {
     CGTrackedResult result;
     double rhs_norm = norm(rhs);
@@ -434,6 +435,8 @@ CGTrackedResult cg_solve_tracked(
         result.final_residual = 0.0;
         return result;
     }
+    if (max_lanczos_vecs <= 0 && n_ritz > 0)
+        max_lanczos_vecs = 3 * n_ritz;  // default: cap at 3× requested Ritz
 
     // Initialise x and r (with optional initial guess)
     Vec x = (x0 && !x0->empty()) ? *x0 : zeros(n);
@@ -490,7 +493,7 @@ CGTrackedResult cg_solve_tracked(
         if (do_ritz) {
             alpha_cg_all.push_back(alpha_real);
             beta_cg_all.push_back(beta_real);
-            if (rnorm > 1e-30 && (int)lanczos_vecs.size() < max_iter) {
+            if (rnorm > 1e-30 && (int)lanczos_vecs.size() < max_lanczos_vecs) {
                 Vec q = r;
                 scale(q, cx(1.0 / rnorm));
                 lanczos_vecs.push_back(std::move(q));

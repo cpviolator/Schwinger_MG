@@ -8,6 +8,17 @@
 static EigenTracker* get_tracker(TrackingState* ts) {
     return static_cast<EigenTracker*>(ts->tracker_ptr);
 }
+static const EigenTracker* get_tracker(const TrackingState* ts) {
+    return static_cast<const EigenTracker*>(ts->tracker_ptr);
+}
+
+std::vector<Vec> TrackingState::get_null_vectors() const {
+    auto* tracker = get_tracker(this);
+    if (!tracker_initialized || !tracker || tracker->pool.empty())
+        return {};
+    int k = std::min(n_ev, (int)tracker->pool.size());
+    return std::vector<Vec>(tracker->pool.begin(), tracker->pool.begin() + k);
+}
 #include <iomanip>
 
 void generate_pseudofermion(const DiracOp& D, std::mt19937& rng, Vec& phi) {
@@ -202,14 +213,32 @@ int plain_leapfrog_evolve(
         OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
 
         if (tracking) {
+            // --- One-time tracker initialization from first CG solve ---
+            auto* tracker = get_tracker(tracking);
+            if (!tracking->tracker_initialized && !tracker) {
+                // Run quick TRLM to seed the pool
+                auto trlm = trlm_eigensolver(A, lat.ndof, tracking->n_ev,
+                    std::min(2 * tracking->n_ev + 10, lat.ndof), 100, 1e-8);
+                if (trlm.converged) {
+                    tracker = new EigenTracker();
+                    tracking->tracker_ptr = tracker;
+                    auto apply_D_init = [&D](const Vec& s, Vec& d) { D.apply(s, d); };
+                    tracker->init(trlm, apply_D_init, lat.ndof,
+                                  tracking->n_ev, tracking->pool_capacity);
+                    tracking->tracker_initialized = true;
+                }
+            }
+
             // Chronological initial guess
             const Vec* x0_ptr = tracking->has_prev_solution
                 ? &tracking->prev_solution : nullptr;
 
             // Tracked CG: x0 + preconditioner + Ritz extraction
+            // Cap Lanczos vectors to 3×n_ritz to control memory/compute
+            int max_lcz = tracking->n_ritz > 0 ? 3 * tracking->n_ritz : 0;
             auto res = cg_solve_tracked(A, lat.ndof, phi,
                 x0_ptr, precond, params.cg_maxiter, params.cg_tol,
-                tracking->n_ritz);
+                tracking->n_ritz, max_lcz);
             total_cg += res.iterations;
 
             // Save solution for next chronological guess
@@ -217,7 +246,7 @@ int plain_leapfrog_evolve(
             tracking->has_prev_solution = true;
 
             // Absorb Ritz vectors + solution into EigenTracker pool
-            auto* tracker = get_tracker(tracking);
+            tracker = get_tracker(tracking);
             if (tracking->tracker_initialized && tracker) {
                 auto apply_D = [&D](const Vec& s, Vec& d) { D.apply(s, d); };
 

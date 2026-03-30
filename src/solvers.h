@@ -119,4 +119,5 @@ CGTrackedResult cg_solve_tracked(
     const Vec* x0,
     const std::function<Vec(const Vec&)>* precond,
     int max_iter, double tol,
-    int n_ritz = 0);
+    int n_ritz = 0,
+    int max_lanczos_vecs = 0);  // 0 = 3*n_ritz
