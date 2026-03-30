@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
         return run_verify_forces(gauge, lcfg, scfg, hcfg);
 
     if (hmc_benchmark)
-        return run_hmc_benchmark(gauge, lat, lcfg, scfg, hcfg, rng);
+        return run_hmc_benchmark(gauge, lat, lcfg, mcfg, scfg, hcfg, rng);
 
     if (run_hmc)
         return run_hmc_mode(gauge, lat, lcfg, scfg, hcfg, rng);

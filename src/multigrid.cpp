@@ -162,7 +162,16 @@ Vec MGHierarchy::precondition(const Vec& b) {
 // EXISTING prolongators (no new near-null vectors needed).
 void MGHierarchy::rebuild_deeper_levels() {
     int n_levels = (int)levels.size();
-    if (n_levels <= 2) return;  // only 2 levels: nothing deeper to rebuild
+
+    // Rebuild sparse coarse stencil for 2+ levels (must run even for n_levels==2)
+    if (use_sparse_coarse && !geo_prolongators.empty()) {
+        auto& P0 = geo_prolongators[0];
+        int fine_dim = levels[0].dim;
+        sparse_Ac.build(P0, levels[0].op, fine_dim);
+        // Note: defl_vecs/defl_vals NOT updated here — kept from last TRLM
+    }
+
+    if (n_levels <= 2) return;  // only 2 levels: no deeper Galerkin to rebuild
 
     for (int l = 0; l < (int)coarse_prolongators.size(); l++) {
         // The operator at level l+1 is already referencing the coarse op
@@ -180,17 +189,7 @@ void MGHierarchy::rebuild_deeper_levels() {
 
     // Update coarsest-level Ac (used for direct solve)
     levels[n_levels - 1].Ac = intermediate_Ac.back();
-
-    // Rebuild sparse coarse stencil (cheap) but NOT TRLM deflation (expensive).
-    // TRLM only runs at explicit setup_sparse_coarse calls (warm rebuild points).
-    // The coarse_solve uses deflated CG with existing deflation vectors on the
-    // rebuilt stencil — the deflation may be slightly stale but still effective.
-    if (use_sparse_coarse && !geo_prolongators.empty()) {
-        auto& P0 = geo_prolongators[0];
-        int fine_dim = levels[0].dim;
-        sparse_Ac.build(P0, levels[0].op, fine_dim);
-        // Note: defl_vecs/defl_vals NOT updated here — kept from last TRLM
-    }
+    // sparse_Ac already rebuilt at top of function
 }
 
 // ---------------------------------------------------------------

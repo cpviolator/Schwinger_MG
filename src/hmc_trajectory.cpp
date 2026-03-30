@@ -118,7 +118,7 @@ HMCResult hmc_trajectory(
                 H_f.SF - H_i.SF, H_f.LD - H_i.LD, total_cg};
     }
 
-    // === Full-lattice path (original) ===
+    // === Full-lattice path ===
     DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
     Vec phi;
     generate_pseudofermion(D_init, rng, phi);
@@ -138,79 +138,8 @@ HMCResult hmc_trajectory(
     }
     double H_init = KE_init + SG_init + SF_init;
 
-    // Half-step momenta
-    {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
-        std::array<RVec, 2> gf, ff;
-        gauge_force(gauge, params.beta, gf);
-
-        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
-        CGResult res;
-        if (precond)
-            res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
-        else
-            res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        total_cg += res.iterations;
-        fermion_force(D, res.solution, ff);
-
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
-    }
-
-    // Full steps
-    for (int step = 0; step < params.n_steps - 1; step++) {
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
-
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
-        std::array<RVec, 2> gf, ff;
-        gauge_force(gauge, params.beta, gf);
-
-        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
-        CGResult res;
-        if (precond)
-            res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
-        else
-            res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        total_cg += res.iterations;
-        fermion_force(D, res.solution, ff);
-
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                mom.pi[mu][s] += dt * (gf[mu][s] + ff[mu][s]);
-    }
-
-    // Final gauge update
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int mu = 0; mu < 2; mu++)
-        for (int s = 0; s < lat.V; s++)
-            gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
-
-    // Half-step momenta (final)
-    {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
-        std::array<RVec, 2> gf, ff;
-        gauge_force(gauge, params.beta, gf);
-
-        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
-        CGResult res;
-        if (precond)
-            res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
-        else
-            res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        total_cg += res.iterations;
-        fermion_force(D, res.solution, ff);
-
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
-    }
+    // MD evolution (leapfrog or Omelyan)
+    total_cg += plain_leapfrog_evolve(gauge, mom, lat, mass, wilson_r, phi, params, precond);
 
     // Final Hamiltonian
     double KE_final = mom.kinetic_energy();
@@ -272,39 +201,63 @@ int plain_leapfrog_evolve(
         fermion_force(D, res.solution, ff);
     };
 
-    // Half-step momentum
+    auto update_mom = [&](std::array<RVec, 2>& gf, std::array<RVec, 2>& ff, double scale) {
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                mom.pi[mu][s] += scale * (gf[mu][s] + ff[mu][s]);
+    };
+
+    auto update_gauge = [&](double scale) {
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                gauge.U[mu][s] *= std::exp(cx(0, scale * mom.pi[mu][s]));
+    };
+
     std::array<RVec, 2> gf, ff;
-    solve_force(gf, ff);
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int mu = 0; mu < 2; mu++)
-        for (int s = 0; s < lat.V; s++)
-            mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
 
-    // Full steps
-    for (int step = 0; step < params.n_steps - 1; step++) {
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+    if (params.omelyan) {
+        // Omelyan (2MN) integrator: PQPQP with λ=0.1932
+        // One step: P(λε) Q(ε/2) P((1-2λ)ε) Q(ε/2) P(λε)
+        // N steps combined: P(λε) [Q(ε/2) P((1-2λ)ε) Q(ε/2) P(2λε)]^{N-1} Q(ε/2) P((1-2λ)ε) Q(ε/2) P(λε)
+        constexpr double lambda = 0.1932;
+        int N = params.n_steps;
+
+        // Initial P(λε)
         solve_force(gf, ff);
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int mu = 0; mu < 2; mu++)
-            for (int s = 0; s < lat.V; s++)
-                mom.pi[mu][s] += dt * (gf[mu][s] + ff[mu][s]);
+        update_mom(gf, ff, lambda * dt);
+
+        for (int step = 0; step < N; step++) {
+            // Q(ε/2)
+            update_gauge(0.5 * dt);
+            // P((1-2λ)ε)
+            solve_force(gf, ff);
+            update_mom(gf, ff, (1.0 - 2.0 * lambda) * dt);
+            // Q(ε/2)
+            update_gauge(0.5 * dt);
+            // P(2λε) or P(λε) for last step
+            solve_force(gf, ff);
+            if (step < N - 1)
+                update_mom(gf, ff, 2.0 * lambda * dt);
+            else
+                update_mom(gf, ff, lambda * dt);
+        }
+    } else {
+        // Standard leapfrog (VV): P(dt/2) [Q(dt) P(dt)]^{N-1} Q(dt) P(dt/2)
+        solve_force(gf, ff);
+        update_mom(gf, ff, 0.5 * dt);
+
+        for (int step = 0; step < params.n_steps - 1; step++) {
+            update_gauge(dt);
+            solve_force(gf, ff);
+            update_mom(gf, ff, dt);
+        }
+
+        update_gauge(dt);
+        solve_force(gf, ff);
+        update_mom(gf, ff, 0.5 * dt);
     }
-
-    // Final gauge update
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int mu = 0; mu < 2; mu++)
-        for (int s = 0; s < lat.V; s++)
-            gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
-
-    // Half-step momentum (final)
-    solve_force(gf, ff);
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int mu = 0; mu < 2; mu++)
-        for (int s = 0; s < lat.V; s++)
-            mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
 
     return total_cg;
 }

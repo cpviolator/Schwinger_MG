@@ -113,6 +113,7 @@ struct HMCParams {
     double c_sw = 0.0;
     double mu_t = 0.0;   // twisted mass parameter
     bool use_eo = false;  // even-odd preconditioning
+    bool omelyan = false; // use Omelyan (2MN) integrator instead of leapfrog
 };
 
 struct HMCResult {

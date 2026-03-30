@@ -529,6 +529,10 @@ struct SparseCoarseOp {
 
             double rnorm = norm(r);
             if (rnorm / bnorm < cg_tol) break;
+            if (std::isnan(rnorm) || std::isinf(rnorm)) {
+                // CG diverged — return best guess
+                break;
+            }
 
             cx rr_new = dot(r, r);
             cx beta = rr_new / rr_val;
