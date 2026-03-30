@@ -64,12 +64,49 @@ HMCResult hmc_trajectory(
         EvenOddDiracOp eoD_init(D_init);
         Vec phi_o = eoD_init.generate_pseudofermion_eo(rng);
 
-        // Solve + force helper
+        // Solve + force helper (with optional tracking)
         auto solve_and_force = [&](std::array<RVec, 2>& ff) {
             DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
             EvenOddDiracOp eoD(D);
             OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-            auto res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+
+            CGResult res;
+            if (tracking) {
+                // Chronological initial guess (extrapolated from E/O solution history)
+                Vec x0_vec;
+                const Vec* x0_ptr = nullptr;
+                if (tracking->has_prev_solution) {
+                    x0_vec = tracking->extrapolated_x0();
+                    if (!x0_vec.empty()) x0_ptr = &x0_vec;
+                }
+
+                // Tracked CG with Ritz extraction
+                int max_lcz = tracking->n_ritz > 0 ? 3 * tracking->n_ritz : 0;
+                auto tres = cg_solve_tracked(A, n_half, phi_o,
+                    x0_ptr, nullptr, params.cg_maxiter, params.cg_tol,
+                    tracking->n_ritz, max_lcz);
+                res = {tres.solution, tres.iterations, tres.final_residual};
+
+                // Save solution into history
+                tracking->push_solution(Vec(tres.solution));
+
+                // Absorb Ritz vectors into tracker pool
+                auto* tracker_p = get_tracker(tracking);
+                if (tracking->tracker_initialized && tracker_p && !tres.ritz_pairs.empty()) {
+                    auto apply_D_half = [&eoD](const Vec& s, Vec& d) {
+                        d.resize(s.size());
+                        eoD.apply_schur(s, d);
+                    };
+                    std::vector<Vec> ritz_vecs;
+                    for (auto& rp : tres.ritz_pairs)
+                        ritz_vecs.push_back(std::move(rp.vector));
+                    tracking->total_ritz_absorbed += tracker_p->absorb(ritz_vecs, apply_D_half);
+                }
+                tracking->force_eval_count++;
+            } else {
+                res = cg_solve(A, n_half, phi_o, params.cg_maxiter, params.cg_tol);
+            }
+
             total_cg += res.iterations;
             Vec y_o(n_half);
             eoD.apply_schur(res.solution, y_o);
