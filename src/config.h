@@ -65,6 +65,7 @@ struct HMCConfig {
     int tracking_n_ritz = 4;
     int tracking_pool_cap = 16;
     int tracking_n_ev = 4;
+    int tracking_history = 1;  // chronological solution history depth (1-10)
 };
 
 struct StudyConfig {

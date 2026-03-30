@@ -87,6 +87,7 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
         tracking_state.n_ritz = hcfg.tracking_n_ritz;
         tracking_state.pool_capacity = hcfg.tracking_pool_cap;
         tracking_state.n_ev = hcfg.tracking_n_ev;
+        tracking_state.history_depth = hcfg.tracking_history;
         tracking = &tracking_state;
         VOUT(V_VERBOSE) << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz
                   << " Ritz/solve, pool=" << hcfg.tracking_pool_cap << "\n";
@@ -114,13 +115,18 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     int saved_count = 0;
     for (int traj = 0; traj < total_traj; traj++) {
         auto t0 = Clock::now();
+        bool is_therm = (traj < hcfg.n_therm);
+
+        // Force accept during thermalisation
+        params.force_accept = is_therm;
+
         // MG maintenance: always update operator, optionally refresh null vecs
         // --rebuild-freq N: rebuild prolongator from pool every N traj (0=never)
         if (use_mg && traj > 0) {
             D_mg = std::make_unique<DiracOp>(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
             int rb = hcfg.rebuild_freq;
 
-            if (rb > 0 && traj % rb == 0 && tracking && tracking->tracker_initialized) {
+            if (rb > 0 && !is_therm && traj % rb == 0 && tracking && tracking->tracker_initialized) {
                 // Pool refresh: rebuild prolongator from tracked eigenvectors
                 auto pool_vecs = tracking->get_null_vectors();
                 if ((int)pool_vecs.size() >= mcfg.k_null) {
@@ -139,8 +145,11 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
             }
         }
 
+        // Only enable tracking after thermalisation (eigenspectrum at steady state)
+        TrackingState* traj_tracking = is_therm ? nullptr : tracking;
+
         auto result = hmc_trajectory(gauge, lat, lcfg.mass, lcfg.wilson_r, params, rng,
-                                      precond_ptr, tracking);
+                                      precond_ptr, traj_tracking);
         double dt_traj = Duration(Clock::now() - t0).count();
 
         if (traj >= hcfg.n_therm) n_accept += result.accepted;

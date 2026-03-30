@@ -134,7 +134,7 @@ HMCResult hmc_trajectory(
         double H_final = H_f.KE + H_f.SG + H_f.SF + H_f.LD;
         double dH = H_final - H_init;
         std::uniform_real_distribution<double> uniform(0.0, 1.0);
-        bool accept = (dH < 0) || (uniform(rng) < std::exp(-dH));
+        bool accept = params.force_accept || (dH < 0) || (uniform(rng) < std::exp(-dH));
         if (!accept) {
             gauge.U[0] = gauge_old.U[0];
             gauge.U[1] = gauge_old.U[1];
@@ -186,7 +186,7 @@ HMCResult hmc_trajectory(
 
     double dH = H_final - H_init;
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
-    bool accept = (dH < 0) || (uniform(rng) < std::exp(-dH));
+    bool accept = params.force_accept || (dH < 0) || (uniform(rng) < std::exp(-dH));
 
     if (!accept) {
         gauge.U[0] = gauge_old.U[0];
@@ -237,9 +237,13 @@ int plain_leapfrog_evolve(
                 }
             }
 
-            // Chronological initial guess
-            const Vec* x0_ptr = tracking->has_prev_solution
-                ? &tracking->prev_solution : nullptr;
+            // Chronological initial guess (extrapolated from history)
+            Vec x0_vec;
+            const Vec* x0_ptr = nullptr;
+            if (tracking->has_prev_solution) {
+                x0_vec = tracking->extrapolated_x0();
+                if (!x0_vec.empty()) x0_ptr = &x0_vec;
+            }
 
             // Tracked CG: x0 + preconditioner + Ritz extraction
             // Cap Lanczos vectors to 3×n_ritz to control memory/compute
@@ -249,9 +253,8 @@ int plain_leapfrog_evolve(
                 tracking->n_ritz, max_lcz);
             total_cg += res.iterations;
 
-            // Save solution for next chronological guess
-            tracking->prev_solution = res.solution;
-            tracking->has_prev_solution = true;
+            // Save solution into history for chronological extrapolation
+            tracking->push_solution(Vec(res.solution));
 
             // Absorb Ritz vectors + solution into EigenTracker pool
             tracker = get_tracker(tracking);

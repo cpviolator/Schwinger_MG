@@ -114,7 +114,8 @@ struct HMCParams {
     double c_sw = 0.0;
     double mu_t = 0.0;   // twisted mass parameter
     bool use_eo = false;  // even-odd preconditioning
-    bool omelyan = false; // use Omelyan (2MN) integrator instead of leapfrog
+    bool omelyan = false;       // use Omelyan (2MN) integrator instead of leapfrog
+    bool force_accept = false;  // always accept (for thermalisation)
 };
 
 struct HMCResult {
@@ -131,7 +132,11 @@ struct HMCResult {
 
 struct TrackingState {
     // Chronological initial guess (Brower et al.)
-    Vec prev_solution;
+    // Stores up to history_depth previous solutions for extrapolation.
+    // With depth=1: x0 = X_{s-1} (constant extrapolation)
+    // With depth=2: x0 = 2*X_{s-1} - X_{s-2} (linear)
+    // With depth=3: x0 = 3*X_{s-1} - 3*X_{s-2} + X_{s-3} (quadratic)
+    std::vector<Vec> solution_history;  // most recent first
     bool has_prev_solution = false;
 
     // EigenTracker pool — opaque pointer, initialized in hmc_trajectory.cpp
@@ -142,6 +147,7 @@ struct TrackingState {
     int n_ritz = 4;
     int pool_capacity = 16;
     int n_ev = 4;
+    int history_depth = 1;  // chronological solutions to keep (1-10)
 
     // Statistics
     int force_eval_count = 0;
@@ -151,9 +157,41 @@ struct TrackingState {
     int total_force_evals = 0;  // accumulates across trajectories
 
     void reset_trajectory() {
-        has_prev_solution = false;
+        // Keep solution history across trajectories (gauge is continuous)
         total_force_evals += force_eval_count;
         force_eval_count = 0;
+    }
+
+    // Store a new solution and maintain history depth
+    void push_solution(Vec&& sol) {
+        solution_history.insert(solution_history.begin(), std::move(sol));
+        if ((int)solution_history.size() > history_depth)
+            solution_history.resize(history_depth);
+        has_prev_solution = true;
+    }
+
+    // Get extrapolated initial guess from solution history
+    // depth=1: x0 = X_{s-1}
+    // depth=2: x0 = 2*X_{s-1} - X_{s-2}
+    // depth=3: x0 = 3*X_{s-1} - 3*X_{s-2} + X_{s-3}
+    Vec extrapolated_x0() const {
+        int h = (int)solution_history.size();
+        if (h == 0) return {};
+        if (h == 1) return solution_history[0];
+        int n = (int)solution_history[0].size();
+        Vec x0(n, 0.0);
+        // Binomial extrapolation coefficients: (-1)^(k+1) * C(h, k)
+        // h=2: [2, -1], h=3: [3, -3, 1], h=4: [4, -6, 4, -1], etc.
+        for (int k = 0; k < h; k++) {
+            // C(h, k+1) * (-1)^k
+            double coeff = 1.0;
+            for (int j = 0; j < k+1; j++)
+                coeff *= (double)(h - j) / (j + 1);
+            if (k % 2 == 1) coeff = -coeff;
+            for (int i = 0; i < n; i++)
+                x0[i] += coeff * solution_history[k][i];
+        }
+        return x0;
     }
 
     // Extract the best n_ev vectors from the tracker pool for MG prolongator.
@@ -168,7 +206,7 @@ struct TrackingState {
     TrackingState(const TrackingState&) = delete;
     TrackingState& operator=(const TrackingState&) = delete;
     TrackingState(TrackingState&& o) noexcept
-        : prev_solution(std::move(o.prev_solution)),
+        : solution_history(std::move(o.solution_history)),
           has_prev_solution(o.has_prev_solution),
           tracker_ptr(o.tracker_ptr), tracker_initialized(o.tracker_initialized),
           n_ritz(o.n_ritz), pool_capacity(o.pool_capacity), n_ev(o.n_ev),
@@ -179,7 +217,7 @@ struct TrackingState {
     TrackingState& operator=(TrackingState&& o) noexcept {
         if (this != &o) {
             destroy_tracker();
-            prev_solution = std::move(o.prev_solution);
+            solution_history = std::move(o.solution_history);
             has_prev_solution = o.has_prev_solution;
             tracker_ptr = o.tracker_ptr; tracker_initialized = o.tracker_initialized;
             n_ritz = o.n_ritz; pool_capacity = o.pool_capacity; n_ev = o.n_ev;
