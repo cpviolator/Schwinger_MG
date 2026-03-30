@@ -12,6 +12,14 @@ static const EigenTracker* get_tracker(const TrackingState* ts) {
     return static_cast<const EigenTracker*>(ts->tracker_ptr);
 }
 
+void TrackingState::destroy_tracker() {
+    if (tracker_ptr) {
+        delete static_cast<EigenTracker*>(tracker_ptr);
+        tracker_ptr = nullptr;
+        tracker_initialized = false;
+    }
+}
+
 std::vector<Vec> TrackingState::get_null_vectors() const {
     auto* tracker = get_tracker(this);
     if (!tracker_initialized || !tracker || tracker->pool.empty())

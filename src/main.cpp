@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
         return run_hmc_benchmark(gauge, lat, lcfg, mcfg, scfg, hcfg, rng);
 
     if (run_hmc)
-        return run_hmc_mode(gauge, lat, lcfg, scfg, hcfg, rng);
+        return run_hmc_mode(gauge, lat, lcfg, mcfg, scfg, hcfg, rng);
 
     if (hmc_multiscale)
         return run_multiscale_hmc(gauge, lat, lcfg, mcfg, scfg, hcfg, rng);

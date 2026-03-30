@@ -156,6 +156,37 @@ struct TrackingState {
     // Extract the best n_ev vectors from the tracker pool for MG prolongator.
     // Returns empty if tracker not initialized.
     std::vector<Vec> get_null_vectors() const;
+
+    // Clean up tracker allocation
+    void destroy_tracker();
+
+    ~TrackingState() { destroy_tracker(); }
+    TrackingState() = default;
+    TrackingState(const TrackingState&) = delete;
+    TrackingState& operator=(const TrackingState&) = delete;
+    TrackingState(TrackingState&& o) noexcept
+        : prev_solution(std::move(o.prev_solution)),
+          has_prev_solution(o.has_prev_solution),
+          tracker_ptr(o.tracker_ptr), tracker_initialized(o.tracker_initialized),
+          n_ritz(o.n_ritz), pool_capacity(o.pool_capacity), n_ev(o.n_ev),
+          force_eval_count(o.force_eval_count),
+          total_ritz_absorbed(o.total_ritz_absorbed),
+          total_solutions_absorbed(o.total_solutions_absorbed)
+    { o.tracker_ptr = nullptr; o.tracker_initialized = false; }
+    TrackingState& operator=(TrackingState&& o) noexcept {
+        if (this != &o) {
+            destroy_tracker();
+            prev_solution = std::move(o.prev_solution);
+            has_prev_solution = o.has_prev_solution;
+            tracker_ptr = o.tracker_ptr; tracker_initialized = o.tracker_initialized;
+            n_ritz = o.n_ritz; pool_capacity = o.pool_capacity; n_ev = o.n_ev;
+            force_eval_count = o.force_eval_count;
+            total_ritz_absorbed = o.total_ritz_absorbed;
+            total_solutions_absorbed = o.total_solutions_absorbed;
+            o.tracker_ptr = nullptr; o.tracker_initialized = false;
+        }
+        return *this;
+    }
 };
 
 HMCResult hmc_trajectory(

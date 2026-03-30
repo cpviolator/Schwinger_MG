@@ -4,6 +4,8 @@
 #include "eigensolver.h"
 #include "solvers.h"
 #include "linalg.h"
+#include "multigrid.h"
+#include "mg_builder.h"
 
 #include <iostream>
 #include <iomanip>
@@ -34,18 +36,22 @@ int run_verify_forces(GaugeField& gauge, const LatticeConfig& lcfg,
 //  Standard HMC mode
 // -----------------------------------------------------------------
 int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
-                 const LatticeConfig& lcfg, const SolverConfig& scfg,
-                 const HMCConfig& hcfg, std::mt19937& rng)
+                 const LatticeConfig& lcfg, const MGConfig& mcfg,
+                 const SolverConfig& scfg, const HMCConfig& hcfg,
+                 std::mt19937& rng)
 {
+    bool use_mg = (mcfg.mg_levels >= 2);
     std::cout << "=== HMC Mode ===\n";
     std::cout << "beta=" << hcfg.beta << "  tau=" << hcfg.tau
               << "  steps=" << hcfg.n_steps << "  dt=" << hcfg.tau/hcfg.n_steps << "\n";
     std::cout << "trajectories=" << hcfg.n_traj << "  therm=" << hcfg.n_therm
               << "  save_every=" << hcfg.save_every << "\n";
+    if (use_mg) std::cout << "MG: " << mcfg.mg_levels << " levels, block="
+                          << mcfg.block_size << ", k_null=" << mcfg.k_null << "\n";
     bool has_ld = (hcfg.use_eo && lcfg.c_sw != 0.0);
     std::cout << "Monomials: KE=kinetic  SG=gauge  SF=fermion";
     if (has_ld) std::cout << "  LD=log-det";
-    std::cout << "  dH=total\n\n";
+    std::cout << "  dH=total\n";
 
     HMCParams params;
     params.beta = hcfg.beta;
@@ -57,6 +63,22 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     params.c_sw = lcfg.c_sw;
     params.mu_t = lcfg.mu_t;
     params.use_eo = hcfg.use_eo;
+    params.omelyan = hcfg.omelyan;
+
+    // MG preconditioner (optional)
+    std::unique_ptr<MGHierarchy> mg;
+    auto D_mg = std::make_unique<DiracOp>(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+    std::function<Vec(const Vec&)> mg_precond_fn;
+    const std::function<Vec(const Vec&)>* precond_ptr = nullptr;
+
+    if (use_mg) {
+        std::mt19937 rng_mg(lcfg.seed + 111);
+        mg = std::make_unique<MGHierarchy>(
+            build_full_mg(*D_mg, mcfg, scfg, rng_mg, 0, true));
+        if (mcfg.symmetric_mg) mg->set_symmetric(0.8);
+        mg_precond_fn = [&mg](const Vec& b) -> Vec { return mg->precondition(b); };
+        precond_ptr = &mg_precond_fn;
+    }
 
     // Eigenspace tracking (chronological x0 + Ritz harvesting)
     TrackingState tracking_state;
@@ -66,8 +88,10 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
         tracking_state.pool_capacity = hcfg.tracking_pool_cap;
         tracking_state.n_ev = hcfg.tracking_n_ev;
         tracking = &tracking_state;
-        std::cout << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz << " Ritz/solve\n";
+        std::cout << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz
+                  << " Ritz/solve, pool=" << hcfg.tracking_pool_cap << "\n";
     }
+    std::cout << "\n";
 
     int n_accept = 0;
     int total_traj = hcfg.n_therm + hcfg.n_traj;
@@ -90,8 +114,28 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     int saved_count = 0;
     for (int traj = 0; traj < total_traj; traj++) {
         auto t0 = Clock::now();
+        // Rebuild MG operator before trajectory (Galerkin, keeps null vecs)
+        if (use_mg && traj > 0) {
+            D_mg = std::make_unique<DiracOp>(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+            mg->levels[0].op = D_mg->as_DdagD_op();
+            mg->levels[0].Ac.build(*D_mg, mg->geo_prolongators[0]);
+            mg->rebuild_deeper_levels();
+        }
+
+        // Refresh MG prolongator from tracking pool every 5 trajectories
+        if (use_mg && tracking && tracking->tracker_initialized && traj > 0 && traj % 5 == 0) {
+            auto pool_vecs = tracking->get_null_vectors();
+            if ((int)pool_vecs.size() >= mcfg.k_null) {
+                std::mt19937 rng_rb(lcfg.seed + 5000 + traj);
+                *mg = build_mg_hierarchy(*D_mg, mcfg.mg_levels, mcfg.block_size,
+                    mcfg.k_null, mcfg.resolved_coarse_block(), 0, rng_rb,
+                    mcfg.w_cycle, 3, 3, false, &pool_vecs);
+                if (mcfg.symmetric_mg) mg->set_symmetric(0.8);
+            }
+        }
+
         auto result = hmc_trajectory(gauge, lat, lcfg.mass, lcfg.wilson_r, params, rng,
-                                      nullptr, tracking);
+                                      precond_ptr, tracking);
         double dt_traj = Duration(Clock::now() - t0).count();
 
         if (traj >= hcfg.n_therm) n_accept += result.accepted;
@@ -131,6 +175,30 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     std::cout << "Acceptance rate (post-therm): " << std::fixed << std::setprecision(1)
               << 100.0 * n_accept / hcfg.n_traj << "%\n";
     std::cout << "Configs saved: " << saved_count << "\n";
+
+    if (tracking && tracking->tracker_initialized) {
+        std::cout << "\n=== Tracking Summary ===\n";
+        std::cout << "Force evaluations: " << tracking->force_eval_count << "\n";
+        std::cout << "Ritz vectors absorbed: " << tracking->total_ritz_absorbed << "\n";
+        std::cout << "Solution vectors absorbed: " << tracking->total_solutions_absorbed << "\n";
+        std::cout << "Pool size: " << tracking->pool_capacity << "\n";
+        // Report pool quality
+        auto pool_vecs = tracking->get_null_vectors();
+        if (!pool_vecs.empty()) {
+            DiracOp D_final(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+            OpApply A_final = D_final.as_DdagD_op();
+            double max_res = 0;
+            for (auto& v : pool_vecs) {
+                Vec Av(lat.ndof); A_final(v, Av);
+                double rq = std::real(dot(v, Av));
+                Vec r = Av; axpy(cx(-rq), v, r);
+                double res = norm(r) / std::max(norm(Av), 1e-30);
+                max_res = std::max(max_res, res);
+            }
+            std::cout << "Pool eigenvector quality: max_res=" << std::scientific
+                      << std::setprecision(2) << max_res << "\n";
+        }
+    }
 
     return 0;
 }
