@@ -23,8 +23,8 @@ using Duration = std::chrono::duration<double>;
 int run_verify_forces(GaugeField& gauge, const LatticeConfig& lcfg,
                       const SolverConfig& scfg, const HMCConfig& hcfg)
 {
-    std::cout << "=== Force Verification Mode ===\n";
-    std::cout << "c_sw=" << lcfg.c_sw << "  mu_t=" << lcfg.mu_t
+    VOUT(V_SUMMARY) << "=== Force Verification Mode ===\n";
+    VOUT(V_SUMMARY) << "c_sw=" << lcfg.c_sw << "  mu_t=" << lcfg.mu_t
               << "  even-odd=" << (hcfg.use_eo ? "yes" : "no")
               << "  beta=" << hcfg.beta << "\n\n";
     bool pass = verify_forces(gauge, hcfg.beta, lcfg.mass, lcfg.wilson_r,
@@ -41,17 +41,17 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
                  std::mt19937& rng)
 {
     bool use_mg = (mcfg.mg_levels >= 2);
-    std::cout << "=== HMC Mode ===\n";
-    std::cout << "beta=" << hcfg.beta << "  tau=" << hcfg.tau
+    VOUT(V_SUMMARY) << "=== HMC Mode ===\n";
+    VOUT(V_SUMMARY) << "beta=" << hcfg.beta << "  tau=" << hcfg.tau
               << "  steps=" << hcfg.n_steps << "  dt=" << hcfg.tau/hcfg.n_steps << "\n";
-    std::cout << "trajectories=" << hcfg.n_traj << "  therm=" << hcfg.n_therm
+    VOUT(V_SUMMARY) << "trajectories=" << hcfg.n_traj << "  therm=" << hcfg.n_therm
               << "  save_every=" << hcfg.save_every << "\n";
-    if (use_mg) std::cout << "MG: " << mcfg.mg_levels << " levels, block="
+    if (use_mg) VOUT(V_VERBOSE) << "MG: " << mcfg.mg_levels << " levels, block="
                           << mcfg.block_size << ", k_null=" << mcfg.k_null << "\n";
     bool has_ld = (hcfg.use_eo && lcfg.c_sw != 0.0);
-    std::cout << "Monomials: KE=kinetic  SG=gauge  SF=fermion";
-    if (has_ld) std::cout << "  LD=log-det";
-    std::cout << "  dH=total\n";
+    VOUT(V_SUMMARY) << "Monomials: KE=kinetic  SG=gauge  SF=fermion";
+    if (has_ld) VOUT(V_SUMMARY) << "  LD=log-det";
+    VOUT(V_SUMMARY) << "  dH=total\n";
 
     HMCParams params;
     params.beta = hcfg.beta;
@@ -88,28 +88,28 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
         tracking_state.pool_capacity = hcfg.tracking_pool_cap;
         tracking_state.n_ev = hcfg.tracking_n_ev;
         tracking = &tracking_state;
-        std::cout << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz
+        VOUT(V_VERBOSE) << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz
                   << " Ritz/solve, pool=" << hcfg.tracking_pool_cap << "\n";
     }
-    std::cout << "\n";
+    VOUT(V_VERBOSE) << "\n";
 
     int n_accept = 0;
     int total_traj = hcfg.n_therm + hcfg.n_traj;
 
-    std::cout << std::setw(5) << "Traj"
+    VOUT(V_VERBOSE) << std::setw(5) << "Traj"
               << std::setw(8) << "Plaq"
               << std::setw(9) << "dKE"
               << std::setw(9) << "dSG"
               << std::setw(9) << "dSF";
-    if (has_ld) std::cout << std::setw(9) << "dLD";
-    std::cout << std::setw(10) << "dH"
+    if (has_ld) VOUT(V_VERBOSE) << std::setw(9) << "dLD";
+    VOUT(V_VERBOSE) << std::setw(10) << "dH"
               << std::setw(4) << "A"
               << std::setw(7) << "Rate"
               << std::setw(6) << "CG"
               << std::setw(8) << "Time"
               << "\n";
     int hdr_width = 61 + (has_ld ? 9 : 0);
-    std::cout << std::string(hdr_width, '-') << "\n";
+    VOUT(V_VERBOSE) << std::string(hdr_width, '-') << "\n";
 
     int saved_count = 0;
     for (int traj = 0; traj < total_traj; traj++) {
@@ -129,7 +129,7 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
                         mcfg.k_null, mcfg.resolved_coarse_block(), 0, rng_rb,
                         mcfg.w_cycle, 3, 3, false, &pool_vecs);
                     if (mcfg.symmetric_mg) mg->set_symmetric(0.8);
-                    std::cout << "  [pool refresh at traj " << traj << "]\n";
+                    VOUT(V_VERBOSE) << "  [pool refresh at traj " << traj << "]\n";
                 }
             } else {
                 // Galerkin only: update coarse op for new gauge, keep null vecs
@@ -147,21 +147,21 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
         int measurement_traj = (traj >= hcfg.n_therm) ? (traj - hcfg.n_therm + 1) : 0;
         double rate = (measurement_traj > 0) ? (double)n_accept / measurement_traj : 0.0;
 
-        std::cout << std::fixed;
-        std::cout << std::setw(5) << traj
+        VOUT(V_SUMMARY) << std::fixed;
+        VOUT(V_SUMMARY) << std::setw(5) << traj
                   << std::setw(8) << std::setprecision(4) << gauge.avg_plaq()
                   << std::setw(9) << std::setprecision(3) << result.dKE
                   << std::setw(9) << std::setprecision(3) << result.dSG
                   << std::setw(9) << std::setprecision(3) << result.dSF;
-        if (has_ld) std::cout << std::setw(9) << std::setprecision(3) << result.dLD;
-        std::cout << std::setw(10) << std::setprecision(4) << result.dH
+        if (has_ld) VOUT(V_SUMMARY) << std::setw(9) << std::setprecision(3) << result.dLD;
+        VOUT(V_SUMMARY) << std::setw(10) << std::setprecision(4) << result.dH
                   << std::setw(4) << (result.accepted ? "Y" : "N")
                   << std::setw(6) << std::setprecision(0)
                   << (traj >= hcfg.n_therm ? 100.0*rate : 0.0) << "%"
                   << std::setw(6) << result.total_cg_iters
                   << std::setw(8) << std::setprecision(2) << dt_traj;
-        if (traj < hcfg.n_therm) std::cout << " [therm]";
-        std::cout << "\n";
+        if (traj < hcfg.n_therm) VOUT(V_SUMMARY) << " [therm]";
+        VOUT(V_SUMMARY) << "\n";
 
         if (traj >= hcfg.n_therm && hcfg.save_every > 0 &&
             (traj - hcfg.n_therm) % hcfg.save_every == 0) {
@@ -170,23 +170,23 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
                 + "_m" + std::to_string((int)(lcfg.mass*10000))
                 + "_" + std::to_string(saved_count) + ".bin";
             save_gauge(gauge, hcfg.beta, lcfg.mass, fname);
-            std::cout << "  -> saved " << fname << "\n";
+            VOUT(V_SUMMARY) << "  -> saved " << fname << "\n";
             saved_count++;
         }
     }
 
-    std::cout << "\n=== HMC Summary ===\n";
-    std::cout << "Final <plaq> = " << std::fixed << std::setprecision(6) << gauge.avg_plaq() << "\n";
-    std::cout << "Acceptance rate (post-therm): " << std::fixed << std::setprecision(1)
+    VOUT(V_SUMMARY) << "\n=== HMC Summary ===\n";
+    VOUT(V_SUMMARY) << "Final <plaq> = " << std::fixed << std::setprecision(6) << gauge.avg_plaq() << "\n";
+    VOUT(V_SUMMARY) << "Acceptance rate (post-therm): " << std::fixed << std::setprecision(1)
               << 100.0 * n_accept / hcfg.n_traj << "%\n";
-    std::cout << "Configs saved: " << saved_count << "\n";
+    VOUT(V_SUMMARY) << "Configs saved: " << saved_count << "\n";
 
     if (tracking && tracking->tracker_initialized) {
-        std::cout << "\n=== Tracking Summary ===\n";
-        std::cout << "Force evaluations: " << tracking->total_force_evals + tracking->force_eval_count << "\n";
-        std::cout << "Ritz vectors absorbed: " << tracking->total_ritz_absorbed << "\n";
-        std::cout << "Solution vectors absorbed: " << tracking->total_solutions_absorbed << "\n";
-        std::cout << "Pool size: " << tracking->pool_capacity << "\n";
+        VOUT(V_VERBOSE) << "\n=== Tracking Summary ===\n";
+        VOUT(V_VERBOSE) << "Force evaluations: " << tracking->total_force_evals + tracking->force_eval_count << "\n";
+        VOUT(V_VERBOSE) << "Ritz vectors absorbed: " << tracking->total_ritz_absorbed << "\n";
+        VOUT(V_VERBOSE) << "Solution vectors absorbed: " << tracking->total_solutions_absorbed << "\n";
+        VOUT(V_VERBOSE) << "Pool size: " << tracking->pool_capacity << "\n";
         // Report pool quality
         auto pool_vecs = tracking->get_null_vectors();
         if (!pool_vecs.empty()) {
@@ -200,7 +200,7 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
                 double res = norm(r) / std::max(norm(Av), 1e-30);
                 max_res = std::max(max_res, res);
             }
-            std::cout << "Pool eigenvector quality: max_res=" << std::scientific
+            VOUT(V_VERBOSE) << "Pool eigenvector quality: max_res=" << std::scientific
                       << std::setprecision(2) << max_res << "\n";
         }
     }
@@ -222,19 +222,19 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
     int n_traj = hcfg.n_traj > 0 ? hcfg.n_traj : 20;
     int total_steps = hcfg.n_outer * hcfg.n_inner;
 
-    std::cout << "=== Multi-Timescale HMC Test ===\n\n";
-    std::cout << "L=" << lcfg.L << "  DOF=" << lat.ndof << "  mass=" << lcfg.mass
+    VOUT(V_SUMMARY) << "=== Multi-Timescale HMC Test ===\n\n";
+    VOUT(V_SUMMARY) << "L=" << lcfg.L << "  DOF=" << lat.ndof << "  mass=" << lcfg.mass
               << "  beta=" << hcfg.beta << "\n";
-    std::cout << "n_outer=" << hcfg.n_outer << "  n_inner=" << hcfg.n_inner
+    VOUT(V_SUMMARY) << "n_outer=" << hcfg.n_outer << "  n_inner=" << hcfg.n_inner
               << "  total_steps=" << total_steps
               << "  tau=" << hcfg.tau << "\n";
-    std::cout << "n_defl=" << hcfg.n_defl
+    VOUT(V_SUMMARY) << "n_defl=" << hcfg.n_defl
               << "  fresh_period=" << hcfg.fresh_period
               << "  traj=" << n_traj << "\n";
-    std::cout << "Monomials: KE=kinetic  SG=gauge  SF=fermion  dH=total\n\n";
+    VOUT(V_SUMMARY) << "Monomials: KE=kinetic  SG=gauge  SF=fermion  dH=total\n\n";
 
     // --- Compute initial eigenvectors ---
-    std::cout << "--- Computing " << hcfg.n_defl << " eigenvectors of D†D ---\n";
+    VOUT(V_VERBOSE) << "--- Computing " << hcfg.n_defl << " eigenvectors of D†D ---\n";
     DiracOp D_init(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
     OpApply A_init = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
     auto trlm = trlm_eigensolver(A_init, lat.ndof, hcfg.n_defl,
@@ -246,11 +246,11 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
     defl.valid = true;
     defl.update_cache(D_init);
 
-    std::cout << "  Eigenvalues: ";
+    VOUT(V_VERBOSE) << "  Eigenvalues: ";
     for (int i = 0; i < std::min(hcfg.n_defl, 8); i++)
-        std::cout << std::scientific << std::setprecision(4) << defl.eigvals[i] << " ";
-    if (hcfg.n_defl > 8) std::cout << "...";
-    std::cout << "\n\n";
+        VOUT(V_VERBOSE) << std::scientific << std::setprecision(4) << defl.eigvals[i] << " ";
+    if (hcfg.n_defl > 8) VOUT(V_VERBOSE) << "...";
+    VOUT(V_VERBOSE) << "\n\n";
 
     // --- Run two HMC streams: standard vs multi-timescale ---
     GaugeField gauge_std = gauge;
@@ -288,8 +288,8 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
     int ms_low_evals_sum = 0;
 
     // --- Standard HMC block ---
-    std::cout << "--- Standard HMC (reference) ---\n";
-    std::cout << std::setw(5) << "traj"
+    VOUT(V_VERBOSE) << "--- Standard HMC (reference) ---\n";
+    VOUT(V_VERBOSE) << std::setw(5) << "traj"
               << std::setw(8) << "Plaq"
               << std::setw(9) << "dKE"
               << std::setw(9) << "dSG"
@@ -299,7 +299,7 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
               << std::setw(6) << "CG"
               << std::setw(8) << "Time"
               << "\n";
-    std::cout << std::string(68, '-') << "\n";
+    VOUT(V_VERBOSE) << std::string(68, '-') << "\n";
 
     struct MSRowFG {
         MultiScaleResult res;
@@ -339,8 +339,8 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
         evolve_deflation_state(defl, D_new, do_fresh);
 
         // Print standard HMC row
-        std::cout << std::fixed;
-        std::cout << std::setw(5) << t
+        VOUT(V_SUMMARY) << std::fixed;
+        VOUT(V_SUMMARY) << std::setw(5) << t
                   << std::setw(8) << std::setprecision(4) << gauge_std.avg_plaq()
                   << std::setw(9) << std::setprecision(3) << res_std.dKE
                   << std::setw(9) << std::setprecision(3) << res_std.dSG
@@ -353,8 +353,8 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
     }
 
     // --- Print MS block ---
-    std::cout << "\n--- Multi-timescale (fine-grid deflation) ---\n";
-    std::cout << std::setw(5) << "traj"
+    VOUT(V_VERBOSE) << "\n--- Multi-timescale (fine-grid deflation) ---\n";
+    VOUT(V_VERBOSE) << std::setw(5) << "traj"
               << std::setw(8) << "Plaq"
               << std::setw(9) << "dKE"
               << std::setw(9) << "dSG"
@@ -365,11 +365,11 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
               << std::setw(6) << "LEv"
               << std::setw(8) << "Time"
               << "\n";
-    std::cout << std::string(74, '-') << "\n";
+    VOUT(V_VERBOSE) << std::string(74, '-') << "\n";
     for (int t = 0; t < n_traj; t++) {
         auto& r = ms_rows[t];
-        std::cout << std::fixed;
-        std::cout << std::setw(5) << t
+        VOUT(V_SUMMARY) << std::fixed;
+        VOUT(V_SUMMARY) << std::setw(5) << t
                   << std::setw(8) << std::setprecision(4) << r.plaq
                   << std::setw(9) << std::setprecision(3) << r.res.dKE
                   << std::setw(9) << std::setprecision(3) << r.res.dSG
@@ -382,37 +382,37 @@ int run_multiscale_hmc(GaugeField& gauge, const Lattice& lat,
                   << "\n";
     }
 
-    std::cout << "\n=== Summary over " << n_traj << " trajectories ===\n";
-    std::cout << "  Standard HMC (n_steps=" << total_steps << "):\n";
-    std::cout << "    Accept rate:  " << std::fixed << std::setprecision(1)
+    VOUT(V_SUMMARY) << "\n=== Summary over " << n_traj << " trajectories ===\n";
+    VOUT(V_SUMMARY) << "  Standard HMC (n_steps=" << total_steps << "):\n";
+    VOUT(V_SUMMARY) << "    Accept rate:  " << std::fixed << std::setprecision(1)
               << 100.0 * std_accept / n_traj << "%\n";
-    std::cout << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
+    VOUT(V_SUMMARY) << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
               << std_dH_sum / n_traj << "\n";
-    std::cout << "    Avg CG iters: " << std_cg_sum / n_traj << "\n";
-    std::cout << "    Avg wall time:" << std::fixed << std::setprecision(3)
+    VOUT(V_SUMMARY) << "    Avg CG iters: " << std_cg_sum / n_traj << "\n";
+    VOUT(V_SUMMARY) << "    Avg wall time:" << std::fixed << std::setprecision(3)
               << std_time_sum / n_traj << "s\n";
 
-    std::cout << "\n  Multi-timescale HMC (n_outer=" << hcfg.n_outer
+    VOUT(V_SUMMARY) << "\n  Multi-timescale HMC (n_outer=" << hcfg.n_outer
               << " n_inner=" << hcfg.n_inner << " n_defl=" << hcfg.n_defl << "):\n";
-    std::cout << "    Accept rate:  " << std::fixed << std::setprecision(1)
+    VOUT(V_SUMMARY) << "    Accept rate:  " << std::fixed << std::setprecision(1)
               << 100.0 * ms_accept / n_traj << "%\n";
-    std::cout << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
+    VOUT(V_SUMMARY) << "    Avg |dH|:     " << std::scientific << std::setprecision(3)
               << ms_dH_sum / n_traj << "\n";
-    std::cout << "    Avg CG iters: " << ms_cg_sum / n_traj
+    VOUT(V_SUMMARY) << "    Avg CG iters: " << ms_cg_sum / n_traj
               << " (high-mode only, " << hcfg.n_outer + 1 << " solves + 2 H evals)\n";
-    std::cout << "    Low-mode evals:" << ms_low_evals_sum / n_traj << " avg/traj\n";
-    std::cout << "    Avg wall time:" << std::fixed << std::setprecision(3)
+    VOUT(V_SUMMARY) << "    Low-mode evals:" << ms_low_evals_sum / n_traj << " avg/traj\n";
+    VOUT(V_SUMMARY) << "    Avg wall time:" << std::fixed << std::setprecision(3)
               << ms_time_sum / n_traj << "s"
               << " (low=" << ms_low_time_sum / n_traj
               << "s high=" << ms_high_time_sum / n_traj << "s)\n";
 
     double cg_ratio = (double)ms_cg_sum / std_cg_sum;
     double time_ratio = ms_time_sum / std_time_sum;
-    std::cout << "\n  CG iter ratio (MS/Std): " << std::fixed << std::setprecision(2)
+    VOUT(V_SUMMARY) << "\n  CG iter ratio (MS/Std): " << std::fixed << std::setprecision(2)
               << cg_ratio << "x\n";
-    std::cout << "  Wall time ratio (MS/Std): " << std::setprecision(2)
+    VOUT(V_SUMMARY) << "  Wall time ratio (MS/Std): " << std::setprecision(2)
               << time_ratio << "x\n";
-    std::cout << "  Wall time speedup: " << std::setprecision(2)
+    VOUT(V_SUMMARY) << "  Wall time speedup: " << std::setprecision(2)
               << 1.0 / time_ratio << "x\n";
 
     return 0;

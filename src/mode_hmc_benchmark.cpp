@@ -60,19 +60,19 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     else
         integrator_desc = "Leapfrog";
 
-    std::cout << "=== HMC Physics Benchmark ===\n";
-    std::cout << "L=" << L << "  DOF=" << lat.ndof
+    VOUT(V_SUMMARY) << "=== HMC Physics Benchmark ===\n";
+    VOUT(V_SUMMARY) << "L=" << L << "  DOF=" << lat.ndof
               << "  mass=" << mass << "  beta=" << beta << "\n";
     if (use_mg_multiscale)
-        std::cout << "n_outer=" << hcfg.n_outer << "  n_inner=" << hcfg.n_inner
+        VOUT(V_SUMMARY) << "n_outer=" << hcfg.n_outer << "  n_inner=" << hcfg.n_inner
                   << "  total_steps=" << hcfg.n_outer * hcfg.n_inner
                   << "  tau=" << std::fixed << std::setprecision(4) << tau << "\n";
     else
-        std::cout << "n_steps=" << n_steps << "  dt=" << std::fixed
+        VOUT(V_SUMMARY) << "n_steps=" << n_steps << "  dt=" << std::fixed
                   << std::setprecision(4) << dt << "  tau=" << tau << "\n";
-    std::cout << "solver=" << solver_desc << "\n";
-    std::cout << "integrator=" << integrator_desc << "\n";
-    std::cout << "therm=" << n_therm << "  traj=" << n_traj << "\n\n";
+    VOUT(V_SUMMARY) << "solver=" << solver_desc << "\n";
+    VOUT(V_SUMMARY) << "integrator=" << integrator_desc << "\n";
+    VOUT(V_SUMMARY) << "therm=" << n_therm << "  traj=" << n_traj << "\n\n";
 
     // === Setup single-timescale HMC params ===
     HMCParams params;
@@ -110,7 +110,7 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     auto D_mg = std::make_unique<DiracOp>(lat, gauge, mass, wilson_r, lcfg.c_sw, lcfg.mu_t);
 
     if (use_mg) {
-        std::cout << "--- Building MG hierarchy ---\n";
+        VOUT(V_VERBOSE) << "--- Building MG hierarchy ---\n";
         std::mt19937 rng_mg(lcfg.seed + 111);
         int n_defl = hcfg.n_defl > 0 ? hcfg.n_defl : 8;
         mg = std::make_unique<MGHierarchy>(
@@ -122,17 +122,17 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
         if (use_mg_multiscale) {
             cdefl.eigvecs = mg->sparse_Ac.defl_vecs;
             cdefl.eigvals = mg->sparse_Ac.defl_vals;
-            std::cout << "  Coarse deflation: " << cdefl.eigvecs.size() << " vectors\n";
+            VOUT(V_VERBOSE) << "  Coarse deflation: " << cdefl.eigvecs.size() << " vectors\n";
         }
-        std::cout << "\n";
+        VOUT(V_VERBOSE) << "\n";
     }
 
     // === 1. Force verification ===
-    std::cout << "--- Force Verification (L=" << L << ") ---\n";
+    VOUT(V_VERBOSE) << "--- Force Verification (L=" << L << ") ---\n";
     bool force_pass = verify_forces(gauge, beta, mass, wilson_r,
                                     scfg.max_iter, scfg.tol, lcfg.c_sw,
                                     use_eo, 1e-4, lcfg.mu_t);
-    std::cout << "\n";
+    VOUT(V_VERBOSE) << "\n";
 
     // Rebind MG operator after force verification
     if (use_mg) {
@@ -143,19 +143,19 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     }
 
     // === 2. Thermalisation (plain CG, no MG — fast at heavy mass, avoids sparse coarse issues) ===
-    std::cout << "--- Thermalisation (" << n_therm << " trajectories, plain CG) ---\n";
+    VOUT(V_SUMMARY) << "--- Thermalisation (" << n_therm << " trajectories, plain CG) ---\n";
     HMCParams therm_params = params;
     therm_params.omelyan = false;
     for (int t = 0; t < n_therm; t++) {
         auto res = hmc_trajectory(gauge, lat, mass, wilson_r, therm_params, rng);
         if ((t+1) % 10 == 0 || t == n_therm - 1)
-            std::cout << "  traj " << t+1 << "/" << n_therm
+            VOUT(V_SUMMARY) << "  traj " << t+1 << "/" << n_therm
                       << "  <plaq>=" << std::fixed << std::setprecision(4)
                       << gauge.avg_plaq()
                       << "  dH=" << std::scientific << std::setprecision(3) << res.dH
                       << "  " << (res.accepted ? "Y" : "N") << "\n";
     }
-    std::cout << "  Thermalised <plaq>=" << std::fixed << std::setprecision(6)
+    VOUT(V_SUMMARY) << "  Thermalised <plaq>=" << std::fixed << std::setprecision(6)
               << gauge.avg_plaq() << "\n\n";
 
     // Rebuild MG on thermalised config
@@ -172,15 +172,15 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     }
 
     // === 3. Production measurement ===
-    std::cout << "--- Production (" << n_traj << " trajectories) ---\n";
-    std::cout << std::setw(5) << "traj"
+    VOUT(V_SUMMARY) << "--- Production (" << n_traj << " trajectories) ---\n";
+    VOUT(V_SUMMARY) << std::setw(5) << "traj"
               << std::setw(8) << "Plaq"
               << std::setw(12) << "dH"
               << std::setw(4) << "A"
               << std::setw(6) << "CG"
               << std::setw(8) << "Time"
               << "\n";
-    std::cout << std::string(43, '-') << "\n";
+    VOUT(V_SUMMARY) << std::string(43, '-') << "\n";
 
     std::vector<double> dH_vals, abs_dH_vals, exp_neg_dH_vals;
     std::vector<double> plaq_vals, time_vals;
@@ -243,7 +243,7 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
         cg_vals.push_back(cg_iters);
         time_vals.push_back(wall);
 
-        std::cout << std::setw(5) << t
+        VOUT(V_SUMMARY) << std::setw(5) << t
                   << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
                   << std::setw(12) << std::scientific << std::setprecision(4) << dH
                   << std::setw(4) << (accepted ? "Y" : "N")
@@ -253,26 +253,26 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     }
 
     // === 4. Reversibility test ===
-    std::cout << "\n--- Reversibility Test ---\n";
+    VOUT(V_VERBOSE) << "\n--- Reversibility Test ---\n";
     if (use_mg_multiscale) {
         auto rev = reversibility_test_mg_multiscale(
             gauge, lat, mass, wilson_r, ms_params,
             cdefl, mg->geo_prolongators[0], mg_precond_fn, rng);
-        std::cout << "  ||dU||/||U|| = " << std::scientific << std::setprecision(3)
+        VOUT(V_VERBOSE) << "  ||dU||/||U|| = " << std::scientific << std::setprecision(3)
                   << rev.gauge_delta << "\n";
-        std::cout << "  ||dp||/||p|| = " << rev.mom_delta << "\n";
-        std::cout << "  dH_fwd       = " << std::setprecision(6) << rev.dH_forward << "\n";
-        std::cout << "  dH_bwd       = " << rev.dH_backward << "\n";
-        std::cout << "  dH_fwd+bwd   = " << std::setprecision(3)
+        VOUT(V_VERBOSE) << "  ||dp||/||p|| = " << rev.mom_delta << "\n";
+        VOUT(V_VERBOSE) << "  dH_fwd       = " << std::setprecision(6) << rev.dH_forward << "\n";
+        VOUT(V_VERBOSE) << "  dH_bwd       = " << rev.dH_backward << "\n";
+        VOUT(V_VERBOSE) << "  dH_fwd+bwd   = " << std::setprecision(3)
                   << rev.dH_forward + rev.dH_backward << "\n\n";
     } else {
         auto rev = reversibility_test_plain(gauge, lat, mass, wilson_r, params, rng, precond_ptr);
-        std::cout << "  ||dU||/||U|| = " << std::scientific << std::setprecision(3)
+        VOUT(V_VERBOSE) << "  ||dU||/||U|| = " << std::scientific << std::setprecision(3)
                   << rev.gauge_delta << "\n";
-        std::cout << "  ||dp||/||p|| = " << rev.mom_delta << "\n";
-        std::cout << "  dH_fwd       = " << std::setprecision(6) << rev.dH_forward << "\n";
-        std::cout << "  dH_bwd       = " << rev.dH_backward << "\n";
-        std::cout << "  dH_fwd+bwd   = " << std::setprecision(3)
+        VOUT(V_VERBOSE) << "  ||dp||/||p|| = " << rev.mom_delta << "\n";
+        VOUT(V_VERBOSE) << "  dH_fwd       = " << std::setprecision(6) << rev.dH_forward << "\n";
+        VOUT(V_VERBOSE) << "  dH_bwd       = " << rev.dH_backward << "\n";
+        VOUT(V_VERBOSE) << "  dH_fwd+bwd   = " << std::setprecision(3)
                   << rev.dH_forward + rev.dH_backward << "\n\n";
     }
 
@@ -299,32 +299,32 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     int n_pos = 0, n_neg = 0;
     for (auto d : dH_vals) { if (d > 0) n_pos++; else n_neg++; }
 
-    std::cout << "=== BENCHMARK RESULTS L=" << L << " ===\n";
-    std::cout << "L                   = " << L << "\n";
-    std::cout << "beta                = " << std::fixed << std::setprecision(6) << beta << "\n";
-    std::cout << "mass                = " << mass << "\n";
-    std::cout << "solver              = " << solver_desc << "\n";
-    std::cout << "integrator          = " << integrator_desc << "\n";
-    std::cout << "n_therm             = " << n_therm << "\n";
-    std::cout << "n_traj              = " << n_traj << "\n";
+    VOUT(V_SUMMARY) << "=== BENCHMARK RESULTS L=" << L << " ===\n";
+    VOUT(V_SUMMARY) << "L                   = " << L << "\n";
+    VOUT(V_SUMMARY) << "beta                = " << std::fixed << std::setprecision(6) << beta << "\n";
+    VOUT(V_SUMMARY) << "mass                = " << mass << "\n";
+    VOUT(V_SUMMARY) << "solver              = " << solver_desc << "\n";
+    VOUT(V_SUMMARY) << "integrator          = " << integrator_desc << "\n";
+    VOUT(V_SUMMARY) << "n_therm             = " << n_therm << "\n";
+    VOUT(V_SUMMARY) << "n_traj              = " << n_traj << "\n";
     if (use_mg_multiscale) {
-        std::cout << "n_outer             = " << hcfg.n_outer << "\n";
-        std::cout << "n_inner             = " << hcfg.n_inner << "\n";
+        VOUT(V_SUMMARY) << "n_outer             = " << hcfg.n_outer << "\n";
+        VOUT(V_SUMMARY) << "n_inner             = " << hcfg.n_inner << "\n";
     } else {
-        std::cout << "n_steps             = " << n_steps << "\n";
-        std::cout << "dt                  = " << std::setprecision(6) << dt << "\n";
+        VOUT(V_SUMMARY) << "n_steps             = " << n_steps << "\n";
+        VOUT(V_SUMMARY) << "dt                  = " << std::setprecision(6) << dt << "\n";
     }
-    std::cout << "acceptance_rate     = " << std::setprecision(6) << accept_rate << "\n";
-    std::cout << "mean_dH             = " << std::scientific << std::setprecision(6) << mean_dH << "\n";
-    std::cout << "mean_abs_dH         = " << mean_abs_dH << "\n";
-    std::cout << "creutz_exp_neg_dH   = " << std::fixed << std::setprecision(6) << creutz << "\n";
-    std::cout << "var_dH              = " << std::scientific << std::setprecision(6) << var_dH << "\n";
-    std::cout << "n_positive_dH       = " << n_pos << "\n";
-    std::cout << "n_negative_dH       = " << n_neg << "\n";
-    std::cout << "mean_plaq           = " << std::fixed << std::setprecision(6) << mean_plaq << "\n";
-    std::cout << "mean_cg_iters       = " << std::setprecision(1) << mean_cg << "\n";
-    std::cout << "mean_time           = " << std::setprecision(4) << mean_time << "\n";
-    std::cout << "force_check         = " << (force_pass ? "PASS" : "FAIL") << "\n";
+    VOUT(V_SUMMARY) << "acceptance_rate     = " << std::setprecision(6) << accept_rate << "\n";
+    VOUT(V_SUMMARY) << "mean_dH             = " << std::scientific << std::setprecision(6) << mean_dH << "\n";
+    VOUT(V_SUMMARY) << "mean_abs_dH         = " << mean_abs_dH << "\n";
+    VOUT(V_SUMMARY) << "creutz_exp_neg_dH   = " << std::fixed << std::setprecision(6) << creutz << "\n";
+    VOUT(V_SUMMARY) << "var_dH              = " << std::scientific << std::setprecision(6) << var_dH << "\n";
+    VOUT(V_SUMMARY) << "n_positive_dH       = " << n_pos << "\n";
+    VOUT(V_SUMMARY) << "n_negative_dH       = " << n_neg << "\n";
+    VOUT(V_SUMMARY) << "mean_plaq           = " << std::fixed << std::setprecision(6) << mean_plaq << "\n";
+    VOUT(V_SUMMARY) << "mean_cg_iters       = " << std::setprecision(1) << mean_cg << "\n";
+    VOUT(V_SUMMARY) << "mean_time           = " << std::setprecision(4) << mean_time << "\n";
+    VOUT(V_SUMMARY) << "force_check         = " << (force_pass ? "PASS" : "FAIL") << "\n";
 
     if (!force_pass) { std::cerr << "FAIL: force verification\n"; return 1; }
     return 0;
@@ -352,13 +352,13 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
     int n_traj = hcfg.n_traj > 0 ? hcfg.n_traj : 10;
     double feast_emax = scfg.feast_emax > 0 ? scfg.feast_emax : 0.0; // 0 = auto
 
-    std::cout << "=== FEAST vs TRLM Eigenspace Construction Benchmark ===\n";
-    std::cout << "L=" << L << "  DOF=" << lat.ndof
+    VOUT(V_SUMMARY) << "=== FEAST vs TRLM Eigenspace Construction Benchmark ===\n";
+    VOUT(V_SUMMARY) << "L=" << L << "  DOF=" << lat.ndof
               << "  mass=" << mass << "  beta=" << hcfg.beta << "\n";
-    std::cout << "block=" << block_size << "  k_null=" << k_null
+    VOUT(V_SUMMARY) << "block=" << block_size << "  k_null=" << k_null
               << "  feast_emax=" << (feast_emax > 0 ? std::to_string(feast_emax) : "auto")
               << "\n";
-    std::cout << "trajectories=" << n_traj << "  therm=" << hcfg.n_therm << "\n\n";
+    VOUT(V_SUMMARY) << "trajectories=" << n_traj << "  therm=" << hcfg.n_therm << "\n\n";
 
     HMCParams hmc_params;
     hmc_params.beta = hcfg.beta;
@@ -371,14 +371,14 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
 
     // Thermalise
     if (hcfg.n_therm > 0) {
-        std::cout << "--- Thermalisation (" << hcfg.n_therm << " trajectories) ---\n";
+        VOUT(V_SUMMARY) << "--- Thermalisation (" << hcfg.n_therm << " trajectories) ---\n";
         for (int t = 0; t < hcfg.n_therm; t++) {
             hmc_trajectory(gauge, lat, mass, wilson_r, hmc_params, rng);
             if ((t+1) % 10 == 0 || t == hcfg.n_therm - 1)
-                std::cout << "  traj " << t+1 << "  <plaq>=" << std::fixed
+                VOUT(V_SUMMARY) << "  traj " << t+1 << "  <plaq>=" << std::fixed
                           << std::setprecision(4) << gauge.avg_plaq() << "\n";
         }
-        std::cout << "\n";
+        VOUT(V_SUMMARY) << "\n";
     }
 
     // Helper: compute max eigenvalue residual ||Av - λv|| / ||Av|| for null vecs
@@ -430,13 +430,13 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
         std::cerr << "Initial TRLM failed\n"; return 1;
     }
 
-    std::cout << "Initial TRLM: " << n_ev << " eigenpairs, residual="
+    VOUT(V_SUMMARY) << "Initial TRLM: " << n_ev << " eigenpairs, residual="
               << std::scientific << std::setprecision(2) << max_residual(trlm_init.eigvecs, D0)
               << "\n";
-    std::cout << "  Eigenvalues:";
+    VOUT(V_SUMMARY) << "  Eigenvalues:";
     for (int i = 0; i < n_ev; i++)
-        std::cout << " " << std::scientific << std::setprecision(4) << trlm_init.eigvals[i];
-    std::cout << "\n\n";
+        VOUT(V_SUMMARY) << " " << std::scientific << std::setprecision(4) << trlm_init.eigvals[i];
+    VOUT(V_SUMMARY) << "\n\n";
 
     // Generate momenta for the MD trajectory
     MomentumField mom(lat);
@@ -444,7 +444,7 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
     int n_md_steps = hcfg.n_steps > 0 ? hcfg.n_steps : 20;
     double dt = hcfg.tau / n_md_steps;
 
-    std::cout << "MD trajectory: " << n_md_steps << " steps, dt=" << std::fixed
+    VOUT(V_SUMMARY) << "MD trajectory: " << n_md_steps << " steps, dt=" << std::fixed
               << std::setprecision(4) << dt << ", tau=" << hcfg.tau << "\n\n";
 
     // Three copies of eigenvectors for tracking
@@ -459,14 +459,14 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
     EigenForecastState forecast;
 
     // Header
-    std::cout << std::setw(5) << "step" << std::setw(8) << "plaq"
+    VOUT(V_SUMMARY) << std::setw(5) << "step" << std::setw(8) << "plaq"
               << "  |  Stale              |  RR-every-step       |  Forecast+RR\n";
-    std::cout << std::setw(13) << ""
+    VOUT(V_SUMMARY) << std::setw(13) << ""
               << "  |  max_res   ev0      |  max_res   ev0      |  max_res   ev0\n";
-    std::cout << std::string(83, '-') << "\n";
+    VOUT(V_SUMMARY) << std::string(83, '-') << "\n";
 
     // Initial state
-    std::cout << std::setw(5) << 0
+    VOUT(V_SUMMARY) << std::setw(5) << 0
               << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
               << "  | " << std::scientific << std::setprecision(2) << max_residual(evecs_stale, D0)
               << "  " << std::setprecision(4) << evals_stale[0]
@@ -527,7 +527,7 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
         evals_fc = std::move(rr_fc.eigvals);
         double res_fc = rr_fc.max_residual;
 
-        std::cout << std::setw(5) << step + 1
+        VOUT(V_SUMMARY) << std::setw(5) << step + 1
                   << std::setw(8) << std::fixed << std::setprecision(4) << gauge.avg_plaq()
                   << "  | " << std::scientific << std::setprecision(2) << res_stale
                   << "  " << std::setprecision(4) << evals_stale[0]
@@ -543,27 +543,27 @@ int run_feast_benchmark(GaugeField& gauge, const Lattice& lat,
     OpApply A_final = D_final.as_DdagD_op();
     auto trlm_final = trlm_eigensolver(A_final, lat.ndof, n_ev, 0, 200, 1e-10);
 
-    std::cout << std::string(83, '-') << "\n";
-    std::cout << "True eigenvalues (fresh TRLM):";
+    VOUT(V_SUMMARY) << std::string(83, '-') << "\n";
+    VOUT(V_SUMMARY) << "True eigenvalues (fresh TRLM):";
     for (int i = 0; i < n_ev; i++)
-        std::cout << " " << std::scientific << std::setprecision(4) << trlm_final.eigvals[i];
-    std::cout << "\n";
+        VOUT(V_SUMMARY) << " " << std::scientific << std::setprecision(4) << trlm_final.eigvals[i];
+    VOUT(V_SUMMARY) << "\n";
 
-    std::cout << "\n=== TRACKING QUALITY SUMMARY ===\n";
-    std::cout << "  Stale:         max_res=" << std::scientific << std::setprecision(2)
+    VOUT(V_SUMMARY) << "\n=== TRACKING QUALITY SUMMARY ===\n";
+    VOUT(V_SUMMARY) << "  Stale:         max_res=" << std::scientific << std::setprecision(2)
               << max_residual(evecs_stale, D_final)
               << "  ev0_err=" << std::abs(evals_stale[0] - trlm_final.eigvals[0]) << "\n";
-    std::cout << "  RR/step:       max_res=" << max_residual(evecs_rr, D_final)
+    VOUT(V_SUMMARY) << "  RR/step:       max_res=" << max_residual(evecs_rr, D_final)
               << "  ev0_err=" << std::abs(evals_rr[0] - trlm_final.eigvals[0]) << "\n";
-    std::cout << "  Forecast+RR:   max_res=" << max_residual(evecs_fc, D_final)
+    VOUT(V_SUMMARY) << "  Forecast+RR:   max_res=" << max_residual(evecs_fc, D_final)
               << "  ev0_err=" << std::abs(evals_fc[0] - trlm_final.eigvals[0]) << "\n";
 
     // Also measure MG quality with each
-    std::cout << "\n  MG quality (CG iters with each eigenspace):\n";
-    std::cout << "    Stale:       CG=" << measure_cg(evecs_stale, D_final) << "\n";
-    std::cout << "    RR/step:     CG=" << measure_cg(evecs_rr, D_final) << "\n";
-    std::cout << "    Forecast+RR: CG=" << measure_cg(evecs_fc, D_final) << "\n";
-    std::cout << "    Fresh TRLM:  CG=" << measure_cg(trlm_final.eigvecs, D_final) << "\n";
+    VOUT(V_SUMMARY) << "\n  MG quality (CG iters with each eigenspace):\n";
+    VOUT(V_SUMMARY) << "    Stale:       CG=" << measure_cg(evecs_stale, D_final) << "\n";
+    VOUT(V_SUMMARY) << "    RR/step:     CG=" << measure_cg(evecs_rr, D_final) << "\n";
+    VOUT(V_SUMMARY) << "    Forecast+RR: CG=" << measure_cg(evecs_fc, D_final) << "\n";
+    VOUT(V_SUMMARY) << "    Fresh TRLM:  CG=" << measure_cg(trlm_final.eigvecs, D_final) << "\n";
 
     return 0;
 }

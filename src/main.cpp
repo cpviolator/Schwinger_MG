@@ -91,9 +91,23 @@ void print_usage(const char* prog) {
         << "  -n <int>              Number of gauge evolution steps    [30]\n"
         << "  -e <float>            Gauge perturbation per step       [0.12]\n"
         << "\n"
+        << "=== Eigenspace Tracking ===\n"
+        << "  --hmc-tracking        Enable chronological x0 + Ritz harvesting\n"
+        << "  --tracking-n-ritz <N> Ritz pairs per CG solve              [4]\n"
+        << "  --tracking-pool <N>   Eigenspace pool capacity              [16]\n"
+        << "  --tracking-n-ev <N>   Wanted eigenvectors                   [4]\n"
+        << "\n"
+        << "=== Benchmarks ===\n"
+        << "  --hmc-benchmark       Run HMC physics benchmark (force/rev/stats)\n"
+        << "  --feast-benchmark     Run FEAST vs TRLM eigenspace comparison\n"
+        << "\n"
         << "=== Deflation Test ===\n"
         << "  --test-deflation      Run coarse eigenvector prolongation test\n"
         << "  --cheb-only           Only test Chebyshev-filtered eigenvectors\n"
+        << "\n"
+        << "=== Output Control ===\n"
+        << "  --verbosity <0-3>     0=silent 1=summary 2=verbose 3=debug  [2]\n"
+        << "  --quiet               Alias for --verbosity 0\n"
         << "\n"
         << "  --help, -h            Show this help\n"
         << "\n"
@@ -242,6 +256,8 @@ int main(int argc, char** argv) {
         else if (match("--forecast-study")) forecast_study = true;
         else if (match("--hmc-benchmark")) hmc_benchmark = true;
         else if (match("--hmc-tracking")) hcfg.enable_tracking = true;
+        else if (match("--verbosity")) lcfg.verbosity = next_int();
+        else if (match("--quiet"))     lcfg.verbosity = 0;
         else if (match("--tracking-n-ritz")) hcfg.tracking_n_ritz = next_int();
         else if (match("--tracking-pool")) hcfg.tracking_pool_cap = next_int();
         else if (match("--tracking-n-ev")) hcfg.tracking_n_ev = next_int();
@@ -282,35 +298,36 @@ int main(int argc, char** argv) {
     }
 
     if (lcfg.n_threads > 0) omp_set_num_threads(lcfg.n_threads);
+    g_verbosity = lcfg.verbosity;
 
     // --- Common setup ---
-    std::cout << "================================================================\n"
-              << "  2D Schwinger Model: MG with EigCG-Inspired Ritz Harvesting\n"
-              << "================================================================\n\n";
+    VOUT(V_SUMMARY) << "================================================================\n"
+                     << "  2D Schwinger Model: MG with EigCG-Inspired Ritz Harvesting\n"
+                     << "================================================================\n\n";
 
     std::mt19937 rng(lcfg.seed);
     Lattice lat(lcfg.L);
     GaugeField gauge(lat);
     gauge.randomise(rng, lcfg.hot_width);
 
-    std::cout << "Lattice: " << lcfg.L << "x" << lcfg.L
+    VOUT(V_SUMMARY) << "Lattice: " << lcfg.L << "x" << lcfg.L
               << "  DOF: " << lat.ndof
               << "  mass: " << lcfg.mass
               << "  r: " << lcfg.wilson_r << "\n";
-    std::cout << "Block: " << mcfg.block_size << "x" << mcfg.block_size
+    VOUT(V_VERBOSE) << "Block: " << mcfg.block_size << "x" << mcfg.block_size
               << "  Null vectors/block: " << mcfg.k_null << "\n";
-    std::cout << "MG levels: " << mcfg.mg_levels
+    VOUT(V_VERBOSE) << "MG levels: " << mcfg.mg_levels
               << "  cycle: " << (mcfg.w_cycle ? "W" : "V")
               << (mcfg.mg_levels > 1
                   ? "  coarse_block: " + std::to_string(mcfg.resolved_coarse_block())
                     + "  refresh: " + std::to_string(study.refresh_interval)
                   : "")
               << "\n";
-    std::cout << "Krylov: " << scfg.krylov
+    VOUT(V_VERBOSE) << "Krylov: " << scfg.krylov
               << "  maxiter: " << scfg.max_iter
               << "  tol: " << std::scientific << std::setprecision(1) << scfg.tol << "\n";
-    std::cout << "OpenMP threads: " << omp_get_max_threads() << "\n";
-    std::cout << "Gauge perturbation per step: epsilon = " << std::fixed
+    VOUT(V_VERBOSE) << "OpenMP threads: " << omp_get_max_threads() << "\n";
+    VOUT(V_VERBOSE) << "Gauge perturbation per step: epsilon = " << std::fixed
               << std::setprecision(4) << study.eps
               << "  steps: " << study.n_steps
               << "  seed: " << lcfg.seed << "\n";
@@ -318,12 +335,12 @@ int main(int argc, char** argv) {
     if (!hcfg.load_file.empty()) {
         GaugeHeader hdr;
         if (!load_gauge(gauge, hdr, hcfg.load_file)) return 1;
-        std::cout << "Loaded gauge from " << hcfg.load_file
+        VOUT(V_SUMMARY) << "Loaded gauge from " << hcfg.load_file
                   << " (beta=" << hdr.beta << " mass=" << hdr.mass
                   << " plaq=" << hdr.avg_plaq << ")\n";
     }
 
-    std::cout << "Initial <plaq> = " << std::fixed << std::setprecision(4)
+    VOUT(V_SUMMARY) << "Initial <plaq> = " << std::fixed << std::setprecision(4)
               << gauge.avg_plaq() << "\n\n";
 
     // --- Mode dispatch ---

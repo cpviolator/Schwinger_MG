@@ -18,13 +18,13 @@ bool load_or_thermalise(GaugeField& gauge, const Lattice& lat,
     std::string cfg_path = therm_cfg_path(lcfg.L, hcfg.beta, hcfg.n_therm);
 
     if (gauge.load(cfg_path)) {
-        std::cout << "--- Loaded thermalised config from " << cfg_path
+        VOUT(V_SUMMARY) << "--- Loaded thermalised config from " << cfg_path
                   << "  <plaq>=" << std::fixed << std::setprecision(4)
                   << gauge.avg_plaq() << " ---\n\n";
         return true;
     }
 
-    std::cout << "--- Thermalisation: " << hcfg.n_therm
+    VOUT(V_SUMMARY) << "--- Thermalisation: " << hcfg.n_therm
               << " standard HMC trajectories ---\n";
 
     DiracOp D_th(lat, gauge, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
@@ -54,14 +54,14 @@ bool load_or_thermalise(GaugeField& gauge, const Lattice& lat,
         auto res = hmc_trajectory(gauge, lat, lcfg.mass, lcfg.wilson_r, hp, rng, &pc_th);
         if (res.accepted) accepted++;
         if ((t+1) % 10 == 0 || t == hcfg.n_therm - 1)
-            std::cout << "  traj " << t+1 << "/" << hcfg.n_therm
+            VOUT(V_SUMMARY) << "  traj " << t+1 << "/" << hcfg.n_therm
                       << "  accept=" << accepted << "/" << (t+1)
                       << "  <plaq>=" << std::fixed << std::setprecision(4)
                       << gauge.avg_plaq() << "\n";
     }
     if (gauge.save(cfg_path))
-        std::cout << "  Saved thermalised config to " << cfg_path << "\n";
-    std::cout << "\n";
+        VOUT(V_VERBOSE) << "  Saved thermalised config to " << cfg_path << "\n";
+    VOUT(V_SUMMARY) << "\n";
 
     return false;
 }

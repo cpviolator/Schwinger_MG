@@ -3,6 +3,7 @@
 #include <omp.h>
 
 long long g_matvec_count = 0;
+int g_verbosity = V_VERBOSE;  // default: verbose (current behaviour)
 
 cx dot(const Vec& a, const Vec& b) {
     double re = 0, im = 0;

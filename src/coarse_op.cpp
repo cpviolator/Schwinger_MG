@@ -26,7 +26,7 @@ void SparseCoarseOp::setup_deflation(int n_ev, int n_kr,
                 emax = 2.0 * quick.eigvals.back();
             else
                 emax = 1.0;  // fallback
-            std::cout << "  FEAST auto Emax=" << emax << "\n";
+            VOUT(V_VERBOSE) << "  FEAST auto Emax=" << emax << "\n";
         }
         int M0 = std::min((int)(1.5 * n_ev) + 4, dim);
         // Warm-start from existing deflation vectors if available

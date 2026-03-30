@@ -10,6 +10,7 @@ struct LatticeConfig {
     int seed = 42;
     int n_threads = 0;
     double hot_width = 0.4;
+    int verbosity = 2;  // 0=silent, 1=summary, 2=verbose, 3=debug
 };
 
 struct MGConfig {

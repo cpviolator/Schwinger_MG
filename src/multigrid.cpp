@@ -506,7 +506,7 @@ std::vector<Vec> compute_near_null_space_feast(
             emax = 2.0 * std::sqrt(quick.eigvals.back());
         else
             emax = 1.0;
-        std::cout << "  FEAST γ₅D: auto window [-" << std::fixed << std::setprecision(4)
+        VOUT(V_VERBOSE) << "  FEAST γ₅D: auto window [-" << std::fixed << std::setprecision(4)
                   << emax << ", " << emax << "]\n";
     }
 
@@ -627,7 +627,7 @@ MGHierarchy build_mg_hierarchy(
 
     int prev_dim = P0.coarse_dim;
 
-    if (verbose) std::cout << "  Level 0: dim=" << D.lat.ndof << " -> coarse_dim=" << prev_dim << "\n";
+    VOUT(V_VERBOSE) << "  Level 0: dim=" << D.lat.ndof << " -> coarse_dim=" << prev_dim << "\n";
 
     // --- Intermediate levels 1 .. n_levels-2 ---
     for (int l = 1; l < n_levels - 1; l++) {
@@ -665,7 +665,7 @@ MGHierarchy build_mg_hierarchy(
         mg.intermediate_Ac.back().build_generic(level_op, Pc, prev_dim, Pc.coarse_dim);
         mg.levels[l].Ac = mg.intermediate_Ac.back();
 
-        if (verbose) std::cout << "  Level " << l << ": dim=" << prev_dim
+        VOUT(V_VERBOSE) << "  Level " << l << ": dim=" << prev_dim
                   << " block=" << blk << " -> coarse_dim=" << Pc.coarse_dim << "\n";
 
         prev_dim = Pc.coarse_dim;
@@ -762,17 +762,17 @@ void MGHierarchy::setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
     // Build sparse coarse op from the same Galerkin projection
     sparse_Ac.build(P0, fine_op, fine_dim);
 
-    std::cout << "  Sparse coarse: dim=" << sparse_Ac.dim
+    VOUT(V_VERBOSE) << "  Sparse coarse: dim=" << sparse_Ac.dim
               << " (nbx=" << sparse_Ac.nbx << " nby=" << sparse_Ac.nby
               << " k_vec=" << sparse_Ac.k_vec << ")\n";
-    std::cout << "  Running " << solver << " for " << n_defl << " deflation vectors...\n";
+    VOUT(V_VERBOSE) << "  Running " << solver << " for " << n_defl << " deflation vectors...\n";
 
     sparse_Ac.setup_deflation(n_defl, 0, 100, 1e-10, solver, feast_emax);
 
-    std::cout << "  TRLM eigenvalues:";
+    VOUT(V_VERBOSE) << "  TRLM eigenvalues:";
     for (int i = 0; i < std::min(n_defl, (int)sparse_Ac.defl_vals.size()); i++)
-        std::cout << " " << sparse_Ac.defl_vals[i];
-    std::cout << "\n";
+        VOUT(V_VERBOSE) << " " << sparse_Ac.defl_vals[i];
+    VOUT(V_VERBOSE) << "\n";
 
     // Wire up the coarsest level to use sparse deflated CG
     int last = (int)levels.size() - 1;
@@ -789,6 +789,6 @@ void MGHierarchy::setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
         return sac->solve(b, max_cg_iter, cg_tol);
     };
 
-    std::cout << "  Coarsest-level solve: deflated CG (sparse, "
+    VOUT(V_VERBOSE) << "  Coarsest-level solve: deflated CG (sparse, "
               << n_defl << " deflation vectors)\n";
 }

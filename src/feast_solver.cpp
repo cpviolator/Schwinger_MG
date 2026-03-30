@@ -1,4 +1,5 @@
 #include "feast_solver.h"
+#include "types.h"
 #include "linalg.h"
 #include <cstring>
 #include <iostream>
@@ -116,7 +117,7 @@ TRLMResult feast_eigensolver(
     int fpm[128];
     std::memset(fpm, 0, sizeof(fpm));
     feast_init(fpm);
-    fpm[0] = 1;         // verbose output
+    fpm[0] = (g_verbosity >= V_DEBUG) ? 1 : 0;  // FEAST verbose output only in debug mode
     fpm[1] = n_contour;  // half-contour quadrature points
     fpm[2] = -(int)std::log10(std::max(tol, 1e-16)); // tolerance exponent
     fpm[3] = max_iter;   // max FEAST iterations
@@ -229,7 +230,7 @@ TRLMResult feast_eigensolver(
     }
 
     // Extract results
-    std::cout << "  FEAST: info=" << info << " mode=" << mode
+    VOUT(V_VERBOSE) << "  FEAST: info=" << info << " mode=" << mode
               << " loops=" << loop << " epsout=" << std::scientific
               << epsout << " solves=" << total_solves
               << " matvecs=" << total_matvecs << "\n";
