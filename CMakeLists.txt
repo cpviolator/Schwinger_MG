@@ -1,4 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
+
+# On macOS, prefer Homebrew gfortran over Intel ifort to match arm64 architecture
+if(APPLE AND NOT CMAKE_Fortran_COMPILER)
+    find_program(GFORTRAN_PATH gfortran PATHS /opt/homebrew/bin /usr/local/bin)
+    if(GFORTRAN_PATH)
+        set(CMAKE_Fortran_COMPILER "${GFORTRAN_PATH}" CACHE FILEPATH "Fortran compiler" FORCE)
+    endif()
+endif()
+
 project(schwinger_mg LANGUAGES CXX C Fortran)
 
 set(CMAKE_CXX_STANDARD 17)
