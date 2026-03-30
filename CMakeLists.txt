@@ -67,6 +67,13 @@ set(SOURCES
     src/hmc_trajectory.cpp
     src/hmc_multiscale.cpp
     src/feast_solver.cpp
+    src/mg_builder.cpp
+    src/hmc_utils.cpp
+    src/mode_hmc.cpp
+    src/mode_mg_hmc.cpp
+    src/mode_forecast_study.cpp
+    src/mode_studies.cpp
+    src/mode_hmc_benchmark.cpp
     src/main.cpp
 )
 

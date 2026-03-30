@@ -1,5 +1,6 @@
 #pragma once
 #include "types.h"
+#include "linalg.h"
 #include "lattice.h"
 #include "gauge.h"
 #include <omp.h>
@@ -171,6 +172,14 @@ struct DiracOp {
                            fwd_x, bwd_x, fwd_y, bwd_y);
         }
     }
+
+    // Convenience: create OpApply from DiracOp
+    OpApply as_DdagD_op() const {
+        return [this](const Vec& s, Vec& d) { apply_DdagD(s, d); };
+    }
+    OpApply as_g5D_op() const {
+        return [this](const Vec& s, Vec& d) { apply_g5D(s, d); };
+    }
 };
 
 // ---------------------------------------------------------------
@@ -260,50 +269,125 @@ struct EvenOddDiracOp {
         apply_diag_inv_impl(src, dst, lat.odd_sites, D.mu_t);
     }
 
-    // Diagonal inverse with explicit twist: D_xx⁻¹ = diag(1/d0, 1/d1) per site
-    // d0 = (2r+m+C) + i·mu_eff,  d1 = (2r+m-C) - i·mu_eff
-    void apply_diag_inv_impl(const Vec& src, Vec& dst,
-                             const std::vector<int>& sites, double mu_eff) const {
+    // --- Template-dispatched diagonal operations ---
+    // Compile-time specialisation eliminates per-iteration branches in tight loops.
+    // HasClover/HasTwist are resolved once at function entry, then the compiler
+    // generates specialised loop bodies for each combination.
+
+    template<bool HasClover, bool HasTwist>
+    void diag_inv_loop(const Vec& src, Vec& dst,
+                       const std::vector<int>& sites, double mu_eff) const {
         int nh = (int)sites.size();
-        bool has_clover = (D.c_sw != 0.0);
-        bool has_twist = (mu_eff != 0.0);
-        #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
-        for (int i = 0; i < nh; i++) {
-            double diag = 2.0*D.r + D.mass;
-            if (has_clover || has_twist) {
+        double diag = 2.0*D.r + D.mass;
+        if constexpr (!HasClover && !HasTwist) {
+            double inv = 1.0 / diag;
+            #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
+            for (int i = 0; i < nh; i++) {
+                dst[2*i]   = inv * src[2*i];
+                dst[2*i+1] = inv * src[2*i+1];
+            }
+        } else {
+            #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
+            for (int i = 0; i < nh; i++) {
                 int s = sites[i];
-                double C = has_clover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
+                double C = HasClover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
                 cx d0 = cx(diag + C, mu_eff);
                 cx d1 = cx(diag - C, -mu_eff);
                 dst[2*i]   = src[2*i]   / d0;
                 dst[2*i+1] = src[2*i+1] / d1;
-            } else {
-                double inv = 1.0 / diag;
-                dst[2*i]   = inv * src[2*i];
-                dst[2*i+1] = inv * src[2*i+1];
             }
+        }
+    }
+
+    template<bool HasClover, bool HasTwist>
+    void diag_mul_loop(const Vec& src, Vec& dst,
+                       const std::vector<int>& site_list, int nh, double mu_eff) const {
+        double diag = 2.0*D.r + D.mass;
+        if constexpr (!HasClover && !HasTwist) {
+            #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
+            for (int i = 0; i < nh; i++) {
+                dst[2*i]   = diag * src[2*i];
+                dst[2*i+1] = diag * src[2*i+1];
+            }
+        } else {
+            #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
+            for (int i = 0; i < nh; i++) {
+                int s = site_list[i];
+                double C = HasClover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
+                cx d0 = cx(diag + C, mu_eff);
+                cx d1 = cx(diag - C, -mu_eff);
+                dst[2*i]   = d0 * src[2*i];
+                dst[2*i+1] = d1 * src[2*i+1];
+            }
+        }
+    }
+
+    template<bool HasClover, bool HasTwist>
+    void schur_diag_loop(const Vec& src_o, Vec& dst_o,
+                         int nh, double mu_eff) const {
+        double diag = 2.0*D.r + D.mass;
+        if constexpr (!HasClover && !HasTwist) {
+            #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
+            for (int i = 0; i < nh; i++) {
+                dst_o[2*i]   = diag * src_o[2*i]   - dst_o[2*i];
+                dst_o[2*i+1] = diag * src_o[2*i+1] - dst_o[2*i+1];
+            }
+        } else {
+            #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
+            for (int i = 0; i < nh; i++) {
+                int s = lat.odd_sites[i];
+                double C = HasClover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
+                cx d0 = cx(diag + C, mu_eff);
+                cx d1 = cx(diag - C, -mu_eff);
+                dst_o[2*i]   = d0 * src_o[2*i]   - dst_o[2*i];
+                dst_o[2*i+1] = d1 * src_o[2*i+1] - dst_o[2*i+1];
+            }
+        }
+    }
+
+    template<bool HasClover, bool HasTwist>
+    double logdet_loop() const {
+        double logdet = 0;
+        double diag = 2.0*D.r + D.mass;
+        int nh = lat.V_half;
+        if constexpr (!HasClover && !HasTwist) {
+            logdet = nh * 2.0 * std::log(diag);
+        } else {
+            double mu2 = D.mu_t * D.mu_t;
+            #pragma omp parallel for schedule(static) reduction(+:logdet) if(nh > OMP_MIN_SIZE/8)
+            for (int i = 0; i < nh; i++) {
+                int s = lat.even_sites[i];
+                double C = HasClover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
+                double d0 = diag + C, d1 = diag - C;
+                logdet += 0.5 * std::log(d0*d0 + mu2) + 0.5 * std::log(d1*d1 + mu2);
+            }
+        }
+        return logdet;
+    }
+
+    // Diagonal inverse with explicit twist: D_xx⁻¹ = diag(1/d0, 1/d1) per site
+    // d0 = (2r+m+C) + i·mu_eff,  d1 = (2r+m-C) - i·mu_eff
+    void apply_diag_inv_impl(const Vec& src, Vec& dst,
+                             const std::vector<int>& sites, double mu_eff) const {
+        bool hc = (D.c_sw != 0.0), ht = (mu_eff != 0.0);
+        if (hc) {
+            if (ht) diag_inv_loop<true,true>(src, dst, sites, mu_eff);
+            else    diag_inv_loop<true,false>(src, dst, sites, mu_eff);
+        } else {
+            if (ht) diag_inv_loop<false,true>(src, dst, sites, mu_eff);
+            else    diag_inv_loop<false,false>(src, dst, sites, mu_eff);
         }
     }
 
     // D_oo: diagonal of odd sites with explicit twist
     void apply_oo_impl(const Vec& src, Vec& dst, double mu_eff) const {
-        int nh = lat.V_half;
-        bool has_clover = (D.c_sw != 0.0);
-        bool has_twist = (mu_eff != 0.0);
-        #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
-        for (int i = 0; i < nh; i++) {
-            double diag = 2.0*D.r + D.mass;
-            if (has_clover || has_twist) {
-                int s = lat.odd_sites[i];
-                double C = has_clover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
-                cx d0 = cx(diag + C, mu_eff);
-                cx d1 = cx(diag - C, -mu_eff);
-                dst[2*i]   = d0 * src[2*i];
-                dst[2*i+1] = d1 * src[2*i+1];
-            } else {
-                dst[2*i]   = diag * src[2*i];
-                dst[2*i+1] = diag * src[2*i+1];
-            }
+        bool hc = (D.c_sw != 0.0), ht = (mu_eff != 0.0);
+        if (hc) {
+            if (ht) diag_mul_loop<true,true>(src, dst, lat.odd_sites, lat.V_half, mu_eff);
+            else    diag_mul_loop<true,false>(src, dst, lat.odd_sites, lat.V_half, mu_eff);
+        } else {
+            if (ht) diag_mul_loop<false,true>(src, dst, lat.odd_sites, lat.V_half, mu_eff);
+            else    diag_mul_loop<false,false>(src, dst, lat.odd_sites, lat.V_half, mu_eff);
         }
     }
 
@@ -320,22 +404,13 @@ struct EvenOddDiracOp {
         apply_eo(tmp_e2, dst_o);                          // hopping: no twist
         // dst_o = D_oo(mu) src_o - dst_o
         int nh = lat.V_half;
-        bool has_clover = (D.c_sw != 0.0);
-        bool has_twist = (mu_eff != 0.0);
-        #pragma omp parallel for schedule(static) if(nh > OMP_MIN_SIZE)
-        for (int i = 0; i < nh; i++) {
-            double diag = 2.0*D.r + D.mass;
-            if (has_clover || has_twist) {
-                int s = lat.odd_sites[i];
-                double C = has_clover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
-                cx d0 = cx(diag + C, mu_eff);
-                cx d1 = cx(diag - C, -mu_eff);
-                dst_o[2*i]   = d0 * src_o[2*i]   - dst_o[2*i];
-                dst_o[2*i+1] = d1 * src_o[2*i+1] - dst_o[2*i+1];
-            } else {
-                dst_o[2*i]   = diag * src_o[2*i]   - dst_o[2*i];
-                dst_o[2*i+1] = diag * src_o[2*i+1] - dst_o[2*i+1];
-            }
+        bool hc = (D.c_sw != 0.0), ht = (mu_eff != 0.0);
+        if (hc) {
+            if (ht) schur_diag_loop<true,true>(src_o, dst_o, nh, mu_eff);
+            else    schur_diag_loop<true,false>(src_o, dst_o, nh, mu_eff);
+        } else {
+            if (ht) schur_diag_loop<false,true>(src_o, dst_o, nh, mu_eff);
+            else    schur_diag_loop<false,false>(src_o, dst_o, nh, mu_eff);
         }
     }
 
@@ -451,24 +526,14 @@ struct EvenOddDiracOp {
     // With twist: det entries are complex, use log|d| = 0.5*log(Re²+Im²)
     // When c_sw=0 and mu_t=0: constant, can be ignored in ΔH
     double log_det_ee() const {
-        double logdet = 0;
-        double mu2 = D.mu_t * D.mu_t;
-        bool has_clover = (D.c_sw != 0.0);
-        bool has_twist = (D.mu_t != 0.0);
-        #pragma omp parallel for schedule(static) reduction(+:logdet) if(lat.V_half > OMP_MIN_SIZE/8)
-        for (int i = 0; i < lat.V_half; i++) {
-            double diag = 2.0*D.r + D.mass;
-            if (has_clover || has_twist) {
-                int s = lat.even_sites[i];
-                double C = has_clover ? 0.5 * D.c_sw * D.clover_field[s] : 0.0;
-                double d0 = diag + C, d1 = diag - C;
-                // log|d0 + i*mu| + log|d1 - i*mu| = 0.5*log(d0²+μ²) + 0.5*log(d1²+μ²)
-                logdet += 0.5 * std::log(d0*d0 + mu2) + 0.5 * std::log(d1*d1 + mu2);
-            } else {
-                logdet += 2.0 * std::log(diag);
-            }
+        bool hc = (D.c_sw != 0.0), ht = (D.mu_t != 0.0);
+        if (hc) {
+            if (ht) return logdet_loop<true,true>();
+            else    return logdet_loop<true,false>();
+        } else {
+            if (ht) return logdet_loop<false,true>();
+            else    return logdet_loop<false,false>();
         }
-        return logdet;
     }
 
     // Reconstruct full solution from odd-site CG solution x_o and pseudofermion φ:

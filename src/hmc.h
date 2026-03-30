@@ -299,3 +299,17 @@ ReversibilityResult reversibility_test_mg_multiscale(
     Prolongator& P,
     std::function<Vec(const Vec&)>& mg_precond,
     std::mt19937& rng);
+
+// Plain leapfrog MD evolution (factored out for reversibility testing).
+// Evolves gauge and mom in-place. Returns total CG iterations.
+int plain_leapfrog_evolve(
+    GaugeField& gauge, MomentumField& mom,
+    const Lattice& lat, double mass, double wilson_r,
+    const Vec& phi, const HMCParams& params,
+    const std::function<Vec(const Vec&)>* precond = nullptr);
+
+// Plain-HMC reversibility test: forward → negate π → backward
+ReversibilityResult reversibility_test_plain(
+    GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
+    const HMCParams& params, std::mt19937& rng,
+    const std::function<Vec(const Vec&)>* precond = nullptr);

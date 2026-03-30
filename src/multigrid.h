@@ -54,12 +54,15 @@ struct MGHierarchy {
     // Sparse coarse operator (optional, for large coarse grids)
     SparseCoarseOp sparse_Ac;
     bool use_sparse_coarse = false;
+    // Stored parameters for rebinding coarse_solve after copy
+    int coarse_cg_maxiter = 200;
+    double coarse_cg_tol = 1e-12;
 
     void update_coarsest_deflation(int n_defl, int lobpcg_iters = 3);
     void set_symmetric(double damping = 0.8);
     Vec precondition(const Vec& b);
     void rebuild_deeper_levels();
-    void rebind_prolongator_lambdas();  // rebind restrict/prolong after P changes
+    void rebind_prolongator_lambdas();  // rebind restrict/prolong + coarse_solve after copy
     Vec prolong_to_fine(const Vec& v_coarse) const;
     std::pair<std::vector<Vec>, std::vector<double>>
     build_fine_deflation(int k, const OpApply& fine_op, int fine_dim,

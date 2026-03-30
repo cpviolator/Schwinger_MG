@@ -243,6 +243,173 @@ HMCResult hmc_trajectory(
 }
 
 // ---------------------------------------------------------------
+//  Plain leapfrog MD evolution (factored out for reversibility)
+//  Evolves gauge and mom in-place using the standard VV leapfrog.
+//  phi is the pseudofermion (fixed throughout the trajectory).
+//  Returns total CG iterations used.
+// ---------------------------------------------------------------
+int plain_leapfrog_evolve(
+    GaugeField& gauge, MomentumField& mom,
+    const Lattice& lat, double mass, double wilson_r,
+    const Vec& phi, const HMCParams& params,
+    const std::function<Vec(const Vec&)>* precond)
+{
+    double dt = params.tau / params.n_steps;
+    double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
+    int total_cg = 0;
+
+    auto solve_force = [&](std::array<RVec, 2>& gf, std::array<RVec, 2>& ff) {
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
+        gauge_force(gauge, params.beta, gf);
+        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
+        CGResult res;
+        if (precond)
+            res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
+        else
+            res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
+        total_cg += res.iterations;
+        fermion_force(D, res.solution, ff);
+    };
+
+    // Half-step momentum
+    std::array<RVec, 2> gf, ff;
+    solve_force(gf, ff);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++)
+            mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
+
+    // Full steps
+    for (int step = 0; step < params.n_steps - 1; step++) {
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+        solve_force(gf, ff);
+        #pragma omp parallel for collapse(2) schedule(static)
+        for (int mu = 0; mu < 2; mu++)
+            for (int s = 0; s < lat.V; s++)
+                mom.pi[mu][s] += dt * (gf[mu][s] + ff[mu][s]);
+    }
+
+    // Final gauge update
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++)
+            gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+
+    // Half-step momentum (final)
+    solve_force(gf, ff);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++)
+            mom.pi[mu][s] += 0.5 * dt * (gf[mu][s] + ff[mu][s]);
+
+    return total_cg;
+}
+
+// ---------------------------------------------------------------
+//  Plain-HMC reversibility test
+//  Forward trajectory → negate momenta → backward trajectory.
+//  Gauge and momenta should return to O(machine epsilon).
+// ---------------------------------------------------------------
+ReversibilityResult reversibility_test_plain(
+    GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
+    const HMCParams& params, std::mt19937& rng,
+    const std::function<Vec(const Vec&)>* precond)
+{
+    double c_sw = params.c_sw;
+    double mu_t = params.mu_t;
+
+    // Save initial gauge
+    GaugeField gauge_save(lat);
+    gauge_save.U[0] = gauge.U[0];
+    gauge_save.U[1] = gauge.U[1];
+
+    // Generate pseudofermion and momenta
+    DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
+    Vec phi;
+    generate_pseudofermion(D_init, rng, phi);
+    MomentumField mom(lat);
+    mom.randomise(rng);
+
+    // Save initial momenta
+    std::array<RVec, 2> pi_save = {mom.pi[0], mom.pi[1]};
+
+    // Compute H_init
+    double KE_init = mom.kinetic_energy();
+    double SG_init = gauge_action(gauge, params.beta);
+    double SF_init;
+    {
+        OpApply A = [&D_init](const Vec& src, Vec& dst) { D_init.apply_DdagD(src, dst); };
+        auto res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
+        SF_init = std::real(dot(phi, res.solution));
+    }
+    double H_init = KE_init + SG_init + SF_init;
+
+    // Forward trajectory
+    int cg_fwd = plain_leapfrog_evolve(gauge, mom, lat, mass, wilson_r, phi, params, precond);
+
+    // Compute H after forward
+    double KE_fwd = mom.kinetic_energy();
+    double SG_fwd = gauge_action(gauge, params.beta);
+    double SF_fwd;
+    {
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
+        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
+        auto res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
+        SF_fwd = std::real(dot(phi, res.solution));
+    }
+    double dH_fwd = (KE_fwd + SG_fwd + SF_fwd) - H_init;
+
+    // Negate momenta
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++)
+            mom.pi[mu][s] = -mom.pi[mu][s];
+
+    // Backward trajectory
+    int cg_bwd = plain_leapfrog_evolve(gauge, mom, lat, mass, wilson_r, phi, params, precond);
+
+    // Compute H after backward
+    double KE_bwd = mom.kinetic_energy();
+    double SG_bwd = gauge_action(gauge, params.beta);
+    double SF_bwd;
+    {
+        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
+        OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
+        auto res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
+        SF_bwd = std::real(dot(phi, res.solution));
+    }
+    double dH_bwd = (KE_bwd + SG_bwd + SF_bwd) - (KE_fwd + SG_fwd + SF_fwd);
+
+    // Compare gauge to saved
+    double gauge_norm = 0, gauge_diff = 0;
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++) {
+            gauge_norm += std::norm(gauge_save.U[mu][s]);
+            gauge_diff += std::norm(gauge.U[mu][s] - gauge_save.U[mu][s]);
+        }
+    double gauge_delta = std::sqrt(gauge_diff / std::max(gauge_norm, 1e-30));
+
+    // Compare momenta (backward negates, so compare -mom to saved)
+    double mom_norm = 0, mom_diff = 0;
+    for (int mu = 0; mu < 2; mu++)
+        for (int s = 0; s < lat.V; s++) {
+            mom_norm += pi_save[mu][s] * pi_save[mu][s];
+            double d = (-mom.pi[mu][s]) - pi_save[mu][s];
+            mom_diff += d * d;
+        }
+    double mom_delta = std::sqrt(mom_diff / std::max(mom_norm, 1e-30));
+
+    // Restore gauge
+    gauge.U[0] = gauge_save.U[0];
+    gauge.U[1] = gauge_save.U[1];
+
+    return {gauge_delta, mom_delta, dH_fwd, dH_bwd, cg_fwd + cg_bwd};
+}
+
+// ---------------------------------------------------------------
 //  Low-mode fermion force from eigenpairs of D†D
 //  Computes X_low = Σ_i (v_i†φ / λ_i) v_i  (low-mode part of solution)
 //  Then calls the standard fermion_force on X_low.

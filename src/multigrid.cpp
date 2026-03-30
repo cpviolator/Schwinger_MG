@@ -203,6 +203,16 @@ void MGHierarchy::rebind_prolongator_lambdas() {
         levels[0].restrict_fn = [&P0](const Vec& v) { return P0.restrict_vec(v); };
         levels[0].prolong_fn  = [&P0](const Vec& v) { return P0.prolong(v); };
     }
+    // Also rebind coarse_solve to this object's sparse_Ac (fixes stale pointer after copy)
+    if (use_sparse_coarse && !levels.empty()) {
+        int last = (int)levels.size() - 1;
+        auto* sac = &sparse_Ac;
+        int miter = coarse_cg_maxiter;
+        double ctol = coarse_cg_tol;
+        levels[last].coarse_solve = [sac, miter, ctol](const Vec& b) -> Vec {
+            return sac->solve(b, miter, ctol);
+        };
+    }
 }
 
 // ---------------------------------------------------------------
@@ -769,14 +779,16 @@ void MGHierarchy::setup_sparse_coarse(const OpApply& fine_op, int fine_dim,
     int last = (int)levels.size() - 1;
     if (last < 0) return;
 
-    // Capture by pointer (sparse_Ac lives in MGHierarchy, same lifetime)
-    auto* sac = &sparse_Ac;
-    int miter = max_cg_iter;
-    double ctol = cg_tol;
-    levels[last].coarse_solve = [sac, miter, ctol](const Vec& b) -> Vec {
-        return sac->solve(b, miter, ctol);
-    };
+    // Store parameters for rebinding after copy
+    coarse_cg_maxiter = max_cg_iter;
+    coarse_cg_tol = cg_tol;
     use_sparse_coarse = true;
+
+    // Bind coarse_solve lambda (rebind_prolongator_lambdas will fix after copy)
+    auto* sac = &sparse_Ac;
+    levels[last].coarse_solve = [sac, max_cg_iter, cg_tol](const Vec& b) -> Vec {
+        return sac->solve(b, max_cg_iter, cg_tol);
+    };
 
     std::cout << "  Coarsest-level solve: deflated CG (sparse, "
               << n_defl << " deflation vectors)\n";
