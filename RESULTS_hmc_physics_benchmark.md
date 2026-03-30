@@ -324,6 +324,37 @@ The prolongator P depends on near-null vectors which become stale as the gauge e
     --rebuild-freq 5 --hmc-eigen-forecast
 ```
 
+## Combined Acceleration Study (L=32, m=0.1)
+
+Stacking multiple accelerations to measure cumulative benefit.
+All tested at L=32, m=0.1, beta=2.0, tau=1.0, 10 therm + 10 measurement, seed=42.
+
+| Configuration | CG/traj | Time/traj | |dH| | Accept |
+|--------------|---------|-----------|------|--------|
+| Plain CG, Leapfrog 20-step | 3200 | 0.21s | 1.3 | 100% |
+| MG + Tracking, Leapfrog | 1300 | 10.7s | 1.3 | 100% |
+| MG + Tracking + Omelyan 20-step | 2400 | 19.8s | 0.03 | 100% |
+| Even-odd only | 1450 | 0.11s | 0.5 | 100% |
+| FGI + MG (n_outer=3, n_inner=2) | 1315 | 2.4s | 5.5 | 0% |
+
+### Key findings
+
+1. **CG reduction**: MG+Tracking gives 60% CG reduction (3200→1300) with identical
+   physics (same dH to 4 decimal places with same seed).
+
+2. **Wall-time crossover**: At L=32, MG V-cycle overhead (10.7s) exceeds CG savings
+   (0.21s × 60% = 0.13s saved). MG becomes cost-effective at larger L where CG
+   iteration cost grows quadratically with volume.
+
+3. **Even-odd**: 2× faster wall time (0.11s) by halving the system dimension.
+   Currently tracking is not wired to the E/O HMC path (future work).
+
+4. **Omelyan over-tuned**: 20 Omelyan steps at m=0.1 gives |dH|=0.03 (too small).
+   Fewer steps would reduce total CG while maintaining acceptance.
+
+5. **FGI at light mass**: n_outer=3 gives 0% acceptance at m=0.1. Needs more
+   outer steps — the fermion force is stiffer at light mass.
+
 ## How to Run
 
 ```bash
