@@ -57,11 +57,15 @@ endif()
 set(SOURCES
     src/linalg.cpp
     src/smoother.cpp
-    src/eigensolver.cpp
+    src/eigensolver_core.cpp
+    src/eigen_evolve.cpp
+    src/eigen_forecast.cpp
     src/solvers.cpp
     src/coarse_op.cpp
     src/multigrid.cpp
-    src/hmc.cpp
+    src/hmc_forces.cpp
+    src/hmc_trajectory.cpp
+    src/hmc_multiscale.cpp
     src/feast_solver.cpp
     src/main.cpp
 )
