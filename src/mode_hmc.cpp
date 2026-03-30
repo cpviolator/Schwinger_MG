@@ -58,6 +58,17 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     params.mu_t = lcfg.mu_t;
     params.use_eo = hcfg.use_eo;
 
+    // Eigenspace tracking (chronological x0 + Ritz harvesting)
+    TrackingState tracking_state;
+    TrackingState* tracking = nullptr;
+    if (hcfg.enable_tracking) {
+        tracking_state.n_ritz = hcfg.tracking_n_ritz;
+        tracking_state.pool_capacity = hcfg.tracking_pool_cap;
+        tracking_state.n_ev = hcfg.tracking_n_ev;
+        tracking = &tracking_state;
+        std::cout << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz << " Ritz/solve\n";
+    }
+
     int n_accept = 0;
     int total_traj = hcfg.n_therm + hcfg.n_traj;
 
@@ -79,7 +90,8 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
     int saved_count = 0;
     for (int traj = 0; traj < total_traj; traj++) {
         auto t0 = Clock::now();
-        auto result = hmc_trajectory(gauge, lat, lcfg.mass, lcfg.wilson_r, params, rng);
+        auto result = hmc_trajectory(gauge, lat, lcfg.mass, lcfg.wilson_r, params, rng,
+                                      nullptr, tracking);
         double dt_traj = Duration(Clock::now() - t0).count();
 
         if (traj >= hcfg.n_therm) n_accept += result.accepted;

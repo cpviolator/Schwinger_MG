@@ -95,3 +95,28 @@ CGResult cg_solve_ritz(
     int max_iter, double tol,
     int n_ritz, std::vector<RitzPair>& ritz_out,
     int max_lanczos_vecs = 0);
+
+// CG with initial guess + preconditioner (combines cg_solve_x0 + cg_solve_precond)
+CGResult cg_solve_x0_precond(
+    const OpApply& A, int n, const Vec& rhs,
+    const Vec& x0,
+    const std::function<Vec(const Vec&)>& precond,
+    int max_iter, double tol);
+
+// Unified tracked CG: initial guess + preconditioner + Ritz extraction.
+// Combines chronological inversion (x0) with MG preconditioning and
+// Lanczos Ritz harvesting in a single CG solve. Zero extra matvecs for
+// Ritz extraction. When n_ritz=0, no Ritz pairs are extracted.
+struct CGTrackedResult {
+    Vec solution;
+    int iterations;
+    double final_residual;
+    std::vector<RitzPair> ritz_pairs;
+};
+
+CGTrackedResult cg_solve_tracked(
+    const OpApply& A, int n, const Vec& rhs,
+    const Vec* x0,
+    const std::function<Vec(const Vec&)>* precond,
+    int max_iter, double tol,
+    int n_ritz = 0);

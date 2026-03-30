@@ -59,6 +59,11 @@ struct HMCConfig {
     int rebuild_freq = 5;
     int mg_perturb_freq = 0;
     std::string only_arms;
+    // Eigenspace tracking
+    bool enable_tracking = false;
+    int tracking_n_ritz = 4;
+    int tracking_pool_cap = 16;
+    int tracking_n_ev = 4;
 };
 
 struct StudyConfig {

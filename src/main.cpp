@@ -241,6 +241,10 @@ int main(int argc, char** argv) {
         else if (match("--hmc-eigen-forecast")) hcfg.eigen_forecast = true;
         else if (match("--forecast-study")) forecast_study = true;
         else if (match("--hmc-benchmark")) hmc_benchmark = true;
+        else if (match("--hmc-tracking")) hcfg.enable_tracking = true;
+        else if (match("--tracking-n-ritz")) hcfg.tracking_n_ritz = next_int();
+        else if (match("--tracking-pool")) hcfg.tracking_pool_cap = next_int();
+        else if (match("--tracking-n-ev")) hcfg.tracking_n_ev = next_int();
         else if (match("--feast-benchmark")) feast_benchmark = true;
         else if (match("--rebuild-freq")) hcfg.rebuild_freq = next_int();
         else if (match("--mg-perturb-freq")) hcfg.mg_perturb_freq = next_int();

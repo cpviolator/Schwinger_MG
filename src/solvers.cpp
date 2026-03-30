@@ -85,6 +85,13 @@ CGResult cg_solve_precond(const OpApply& A, int n, const Vec& rhs,
     return cg_solve_core(A, n, rhs, nullptr, &precond, max_iter, tol);
 }
 
+CGResult cg_solve_x0_precond(const OpApply& A, int n, const Vec& rhs,
+                              const Vec& x0,
+                              const std::function<Vec(const Vec&)>& precond,
+                              int max_iter, double tol) {
+    return cg_solve_core(A, n, rhs, &x0, &precond, max_iter, tol);
+}
+
 // ---------------------------------------------------------------
 //  Deflated Preconditioned CG for HPD operator
 //  Uses deflation vectors U to project out small eigenvalue components
@@ -405,6 +412,138 @@ CGResult cg_solve_ritz(
 
     double final_res = norm(r) / rhs_norm;
     return {x, iter, final_res};
+}
+
+// ---------------------------------------------------------------
+//  Unified tracked CG: x0 + preconditioner + Ritz extraction
+//  Combines chronological inversion, MG preconditioning, and
+//  Lanczos Ritz harvesting in a single CG solve.
+// ---------------------------------------------------------------
+CGTrackedResult cg_solve_tracked(
+    const OpApply& A, int n, const Vec& rhs,
+    const Vec* x0,
+    const std::function<Vec(const Vec&)>* precond,
+    int max_iter, double tol,
+    int n_ritz)
+{
+    CGTrackedResult result;
+    double rhs_norm = norm(rhs);
+    if (rhs_norm < 1e-30) {
+        result.solution = zeros(n);
+        result.iterations = 0;
+        result.final_residual = 0.0;
+        return result;
+    }
+
+    // Initialise x and r (with optional initial guess)
+    Vec x = (x0 && !x0->empty()) ? *x0 : zeros(n);
+    Vec r(n);
+    if (x0 && !x0->empty()) {
+        Vec Ax(n); A(x, Ax);
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++) r[i] = rhs[i] - Ax[i];
+    } else {
+        r = rhs;
+    }
+
+    // Preconditioned initial direction
+    Vec z = precond ? (*precond)(r) : r;
+    Vec p(z);
+    cx rz = dot(r, z);
+    int iter = 0;
+
+    // Lanczos vectors and CG coefficients for Ritz extraction
+    std::vector<Vec> lanczos_vecs;
+    std::vector<double> alpha_cg_all, beta_cg_all;
+    bool do_ritz = (n_ritz > 0);
+
+    if (do_ritz) {
+        double rn = norm(r);
+        if (rn > 1e-30) {
+            Vec q = r;
+            scale(q, cx(1.0 / rn));
+            lanczos_vecs.push_back(std::move(q));
+        }
+    }
+
+    while (iter < max_iter) {
+        Vec Ap(n);
+        A(p, Ap);
+        cx pAp = dot(p, Ap);
+        cx alpha = rz / pAp;
+
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * Ap[i];
+        }
+        iter++;
+
+        double rnorm = norm(r);
+
+        // Preconditioner + coefficient tracking
+        z = precond ? (*precond)(r) : r;
+        cx rz_new = dot(r, z);
+        double alpha_real = std::real(alpha);
+        double beta_real = std::real(rz_new / rz);
+
+        if (do_ritz) {
+            alpha_cg_all.push_back(alpha_real);
+            beta_cg_all.push_back(beta_real);
+            if (rnorm > 1e-30 && (int)lanczos_vecs.size() < max_iter) {
+                Vec q = r;
+                scale(q, cx(1.0 / rnorm));
+                lanczos_vecs.push_back(std::move(q));
+            }
+        }
+
+        if (rnorm / rhs_norm < tol) break;
+
+        rz = rz_new;
+        #pragma omp parallel for schedule(static) if(n > OMP_MIN_SIZE)
+        for (int i = 0; i < n; i++)
+            p[i] = z[i] + beta_real * p[i];
+    }
+
+    result.solution = std::move(x);
+    result.iterations = iter;
+    result.final_residual = norm(r) / rhs_norm;
+
+    // Ritz extraction from Lanczos tridiagonal
+    if (do_ritz) {
+        int m = std::min((int)alpha_cg_all.size(), (int)lanczos_vecs.size());
+        if (m >= n_ritz) {
+            std::vector<Vec> T_cols(m, Vec(m, 0.0));
+            T_cols[0][0] = 1.0 / alpha_cg_all[0];
+            for (int k = 1; k < m; k++)
+                T_cols[k][k] = 1.0 / alpha_cg_all[k]
+                             + beta_cg_all[k-1] / alpha_cg_all[k-1];
+            for (int k = 0; k < m - 1; k++) {
+                double gamma = std::sqrt(std::max(beta_cg_all[k], 0.0))
+                             / alpha_cg_all[k];
+                T_cols[k+1][k] = gamma;
+                T_cols[k][k+1] = gamma;
+            }
+
+            RVec evals;
+            std::vector<Vec> evecs;
+            lanczos_eigen(T_cols, m, evals, evecs);
+
+            int nh = std::min(n_ritz, m);
+            for (int pi = 0; pi < nh; pi++) {
+                RitzPair rp;
+                rp.value = evals[pi];
+                rp.vector = zeros(n);
+                for (int k = 0; k < m; k++)
+                    axpy(evecs[k][pi], lanczos_vecs[k], rp.vector);
+                double nv = norm(rp.vector);
+                if (nv > 1e-14) scale(rp.vector, cx(1.0 / nv));
+                result.ritz_pairs.push_back(std::move(rp));
+            }
+        }
+    }
+
+    return result;
 }
 
 FGMRESResult fgmres_solve_generic(

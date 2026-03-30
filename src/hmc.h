@@ -10,6 +10,7 @@
 #include <array>
 #include <random>
 #include <functional>
+#include <memory>
 
 // Perturb gauge field by small random phases (simulates one MD step)
 void perturb_gauge(GaugeField& g, std::mt19937& rng, double epsilon);
@@ -126,10 +127,38 @@ struct HMCResult {
     int total_cg_iters;
 };
 
+// --- Eigenspace tracking during HMC ---
+
+struct TrackingState {
+    // Chronological initial guess (Brower et al.)
+    Vec prev_solution;
+    bool has_prev_solution = false;
+
+    // EigenTracker pool — opaque pointer, initialized in hmc_trajectory.cpp
+    void* tracker_ptr = nullptr;  // actually EigenTracker*, cast in .cpp
+    bool tracker_initialized = false;
+
+    // Configuration
+    int n_ritz = 4;
+    int pool_capacity = 16;
+    int n_ev = 4;
+
+    // Statistics
+    int force_eval_count = 0;
+    int total_ritz_absorbed = 0;
+    int total_solutions_absorbed = 0;
+
+    void reset_trajectory() {
+        has_prev_solution = false;
+        force_eval_count = 0;
+    }
+};
+
 HMCResult hmc_trajectory(
     GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
     const HMCParams& params, std::mt19937& rng,
-    const std::function<Vec(const Vec&)>* precond = nullptr);
+    const std::function<Vec(const Vec&)>* precond = nullptr,
+    TrackingState* tracking = nullptr);
 
 // --- Multi-timescale HMC with exact low-mode treatment ---
 
@@ -303,11 +332,13 @@ ReversibilityResult reversibility_test_mg_multiscale(
 
 // Plain leapfrog MD evolution (factored out for reversibility testing).
 // Evolves gauge and mom in-place. Returns total CG iterations.
+// tracking: optional eigenspace tracking state (nullptr = disabled)
 int plain_leapfrog_evolve(
     GaugeField& gauge, MomentumField& mom,
     const Lattice& lat, double mass, double wilson_r,
     const Vec& phi, const HMCParams& params,
-    const std::function<Vec(const Vec&)>* precond = nullptr);
+    const std::function<Vec(const Vec&)>* precond = nullptr,
+    TrackingState* tracking = nullptr);
 
 // Plain-HMC reversibility test: forward → negate π → backward
 ReversibilityResult reversibility_test_plain(

@@ -3,6 +3,11 @@
 #include <cmath>
 #include <chrono>
 #include <iostream>
+
+// Helper: get EigenTracker from TrackingState's opaque pointer
+static EigenTracker* get_tracker(TrackingState* ts) {
+    return static_cast<EigenTracker*>(ts->tracker_ptr);
+}
 #include <iomanip>
 
 void generate_pseudofermion(const DiracOp& D, std::mt19937& rng, Vec& phi) {
@@ -14,7 +19,8 @@ void generate_pseudofermion(const DiracOp& D, std::mt19937& rng, Vec& phi) {
 HMCResult hmc_trajectory(
     GaugeField& gauge, const Lattice& lat, double mass, double wilson_r,
     const HMCParams& params, std::mt19937& rng,
-    const std::function<Vec(const Vec&)>* precond)
+    const std::function<Vec(const Vec&)>* precond,
+    TrackingState* tracking)
 {
     double dt = params.tau / params.n_steps;
     double c_sw = params.c_sw;
@@ -139,7 +145,8 @@ HMCResult hmc_trajectory(
     double H_init = KE_init + SG_init + SF_init;
 
     // MD evolution (leapfrog or Omelyan)
-    total_cg += plain_leapfrog_evolve(gauge, mom, lat, mass, wilson_r, phi, params, precond);
+    if (tracking) tracking->reset_trajectory();
+    total_cg += plain_leapfrog_evolve(gauge, mom, lat, mass, wilson_r, phi, params, precond, tracking);
 
     // Final Hamiltonian
     double KE_final = mom.kinetic_energy();
@@ -181,7 +188,8 @@ int plain_leapfrog_evolve(
     GaugeField& gauge, MomentumField& mom,
     const Lattice& lat, double mass, double wilson_r,
     const Vec& phi, const HMCParams& params,
-    const std::function<Vec(const Vec&)>* precond)
+    const std::function<Vec(const Vec&)>* precond,
+    TrackingState* tracking)
 {
     double dt = params.tau / params.n_steps;
     double c_sw = params.c_sw;
@@ -192,13 +200,58 @@ int plain_leapfrog_evolve(
         DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         gauge_force(gauge, params.beta, gf);
         OpApply A = [&D](const Vec& src, Vec& dst) { D.apply_DdagD(src, dst); };
-        CGResult res;
-        if (precond)
-            res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
-        else
-            res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
-        total_cg += res.iterations;
-        fermion_force(D, res.solution, ff);
+
+        if (tracking) {
+            // Chronological initial guess
+            const Vec* x0_ptr = tracking->has_prev_solution
+                ? &tracking->prev_solution : nullptr;
+
+            // Tracked CG: x0 + preconditioner + Ritz extraction
+            auto res = cg_solve_tracked(A, lat.ndof, phi,
+                x0_ptr, precond, params.cg_maxiter, params.cg_tol,
+                tracking->n_ritz);
+            total_cg += res.iterations;
+
+            // Save solution for next chronological guess
+            tracking->prev_solution = res.solution;
+            tracking->has_prev_solution = true;
+
+            // Absorb Ritz vectors + solution into EigenTracker pool
+            auto* tracker = get_tracker(tracking);
+            if (tracking->tracker_initialized && tracker) {
+                auto apply_D = [&D](const Vec& s, Vec& d) { D.apply(s, d); };
+
+                // Absorb Ritz vectors
+                if (!res.ritz_pairs.empty()) {
+                    std::vector<Vec> ritz_vecs;
+                    for (auto& rp : res.ritz_pairs)
+                        ritz_vecs.push_back(std::move(rp.vector));
+                    int n_abs = tracker->absorb(ritz_vecs, apply_D);
+                    tracking->total_ritz_absorbed += n_abs;
+                }
+
+                // Absorb normalised solution vector
+                Vec x_norm = res.solution;
+                double xn = norm(x_norm);
+                if (xn > 1e-14) {
+                    scale(x_norm, cx(1.0/xn));
+                    tracker->absorb({x_norm}, apply_D);
+                    tracking->total_solutions_absorbed++;
+                }
+            }
+
+            tracking->force_eval_count++;
+            fermion_force(D, res.solution, ff);
+        } else {
+            // Original path: no tracking
+            CGResult res;
+            if (precond)
+                res = cg_solve_precond(A, lat.ndof, phi, *precond, params.cg_maxiter, params.cg_tol);
+            else
+                res = cg_solve(A, lat.ndof, phi, params.cg_maxiter, params.cg_tol);
+            total_cg += res.iterations;
+            fermion_force(D, res.solution, ff);
+        }
     };
 
     auto update_mom = [&](std::array<RVec, 2>& gf, std::array<RVec, 2>& ff, double scale) {
