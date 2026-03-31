@@ -255,7 +255,8 @@ int main(int argc, char** argv) {
         else if (match("--hmc-load")) hcfg.load_file     = argv[++i];
         else if (match("--hmc-multiscale")) hmc_multiscale = true;
         else if (match("--hmc-mg-multiscale")) hmc_mg_multiscale = true;
-        else if (match("--hmc-force-gradient")) hcfg.force_gradient = true;
+        else if (match("--hmc-force-gradient")) hcfg.force_gradient = 1;
+        else if (match("--hmc-fgi-qpqpq")) hcfg.force_gradient = 2;
         else if (match("--hmc-omelyan")) hcfg.omelyan     = true;
         else if (match("--hmc-revtest")) hmc_revtest       = true;
         else if (match("--verify-forces")) verify_forces_flag = true;

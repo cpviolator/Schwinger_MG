@@ -327,9 +327,12 @@ struct CoarseDeflState {
 enum class OuterIntegrator {
     Leapfrog,   // 2nd order, 1 force eval per step
     Omelyan,    // 2nd order optimised (2MN), 2 force evals per step
-    FGI         // 4th order Hessian-free force gradient (MILC PQPQP_FGI)
+    FGI,        // 4th order PQPQP (MILC convention, momentum-first)
                 // P(λh) inner(h/2) FG((1-2λ)h) inner(h/2) P(λh)
                 // λ=1/6, ξ=1/72. FG step = 2 force evals via gauge displacement.
+    FGI_QPQPQ   // 4th order QPQPQ (position-first)
+                // inner(λh) P(h/2) FG((1-2λ)h) P(h/2) inner(λh)
+                // Same λ, ξ. Inner integrator wraps the outer force.
 };
 
 struct MGMultiScaleParams {

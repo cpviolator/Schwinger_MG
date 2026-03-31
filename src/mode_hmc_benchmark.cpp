@@ -33,7 +33,7 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     double tau = hcfg.tau;
     bool use_mg = (mcfg.mg_levels >= 2);
     bool use_eo = hcfg.use_eo;
-    bool use_multiscale = hcfg.force_gradient || hcfg.omelyan;
+    bool use_multiscale = (hcfg.force_gradient > 0) || hcfg.omelyan;
     // Multi-timescale requires MG for coarse deflation
     bool use_mg_multiscale = use_multiscale && use_mg;
 
@@ -49,7 +49,7 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     if (use_mg && use_eo) solver_desc = "MG-preconditioned even-odd CG";
 
     std::string integrator_desc;
-    if (use_mg_multiscale && hcfg.force_gradient)
+    if (use_mg_multiscale && hcfg.force_gradient > 0)
         integrator_desc = "Multi-timescale FGI (n_outer=" + std::to_string(hcfg.n_outer)
             + " n_inner=" + std::to_string(hcfg.n_inner) + ")";
     else if (use_mg_multiscale && hcfg.omelyan)
@@ -101,7 +101,8 @@ int run_hmc_benchmark(GaugeField& gauge, const Lattice& lat,
     ms_params.use_eo = use_eo;
     ms_params.defl_refresh = hcfg.defl_refresh;
     if (hcfg.omelyan) ms_params.outer_type = OuterIntegrator::Omelyan;
-    if (hcfg.force_gradient) ms_params.outer_type = OuterIntegrator::FGI;
+    if (hcfg.force_gradient == 1) ms_params.outer_type = OuterIntegrator::FGI;
+    if (hcfg.force_gradient == 2) ms_params.outer_type = OuterIntegrator::FGI_QPQPQ;
 
     // === Build MG hierarchy ===
     std::unique_ptr<MGHierarchy> mg;

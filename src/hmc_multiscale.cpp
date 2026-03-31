@@ -708,7 +708,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
             kick_mom(F_outer, (o < params.n_outer - 1) ? (2.0 * lam * h) : (lam * h));
         }
 
-    } else {
+    } else if (params.outer_type == OuterIntegrator::FGI) {
         // =====================================================
         //  MILC-style nested FGI (PQPQP_FGI)
         //  Yin & Mawhinney arXiv:1111.5059, Kennedy et al.
@@ -786,6 +786,65 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
             compute_outer_force(F_outer);
             kick_mom(F_outer, (o < params.n_outer - 1) ? (2.0 * lam * h) : (lam * h));
+        }
+
+    } else if (params.outer_type == OuterIntegrator::FGI_QPQPQ) {
+        // =====================================================
+        //  QPQPQ nested FGI (position-first)
+        //  inner(λh) P(h/2) FG((1-2λ)h) P(h/2) inner(λh)
+        //  Same λ=1/6, ξ=1/72 as PQPQP.
+        // =====================================================
+        double lam = 1.0 / 6.0;
+        double xi = 1.0 / 72.0;
+        double one_m_2lam = 1.0 - 2.0 * lam;
+        double xi_h3 = 2.0 * xi * h * h * h;
+
+        // FG step (same as PQPQP — displaced gauge force gradient)
+        auto fg_step = [&]() {
+            auto t0 = Clock::now();
+            GaugeField gauge_save(lat);
+            gauge_save.U[0] = gauge.U[0];
+            gauge_save.U[1] = gauge.U[1];
+            MomentumField mom_save(lat);
+            mom_save.pi[0] = mom.pi[0];
+            mom_save.pi[1] = mom.pi[1];
+
+            #pragma omp parallel for collapse(2) schedule(static)
+            for (int mu = 0; mu < 2; mu++)
+                for (int s = 0; s < lat.V; s++)
+                    mom.pi[mu][s] = 0.0;
+
+            std::array<RVec, 2> f_tmp;
+            compute_outer_force(f_tmp);
+            double fg_kick_coeff = xi_h3 / (one_m_2lam * h);
+            kick_mom(f_tmp, fg_kick_coeff);
+            update_gauge(1.0);
+
+            mom.pi[0] = mom_save.pi[0];
+            mom.pi[1] = mom_save.pi[1];
+
+            compute_outer_force(f_tmp);
+            kick_mom(f_tmp, one_m_2lam * h);
+
+            gauge.U[0] = gauge_save.U[0];
+            gauge.U[1] = gauge_save.U[1];
+
+            highmode_time += Dur(Clock::now() - t0).count();
+        };
+
+        // Main loop: inner(λh) [P(h/2) FG P(h/2) inner(2λh)]^{N-1} P(h/2) FG P(h/2) inner(λh)
+        inner_integrator(lam * h);
+
+        for (int o = 0; o < params.n_outer; o++) {
+            compute_outer_force(F_outer);
+            kick_mom(F_outer, 0.5 * h);
+
+            fg_step();
+
+            compute_outer_force(F_outer);
+            kick_mom(F_outer, 0.5 * h);
+
+            inner_integrator((o < params.n_outer - 1) ? (2.0 * lam * h) : (lam * h));
         }
     }
 

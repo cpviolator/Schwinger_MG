@@ -51,7 +51,7 @@ struct HMCConfig {
     int fresh_period = 10;
     int defl_refresh = 0;
     bool use_eo = false;
-    bool force_gradient = false;
+    int force_gradient = 0;  // 0=off, 1=PQPQP (default FGI), 2=QPQPQ
     bool omelyan = false;
     bool eigen_forecast = false;
     std::string save_prefix = "gauge";
