@@ -72,25 +72,36 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
     int cdim = mg.sparse_Ac.dim;
     std::cout << "  Coarse dim: " << cdim << "  n_defl: " << n_defl << "\n";
 
-    // Extract coarse deflation state
     CoarseDeflState cdefl;
     cdefl.eigvecs = mg.sparse_Ac.defl_vecs;
     cdefl.eigvals = mg.sparse_Ac.defl_vals;
 
     std::cout << "  Coarse eigenvalues: ";
-    for (int i = 0; i < std::min(n_defl, 8); i++)
+    for (int i = 0; i < std::min(n_defl, (int)cdefl.eigvals.size()); i++)
         std::cout << std::scientific << std::setprecision(4)
                   << cdefl.eigvals[i] << " ";
     if (n_defl > 8) std::cout << "...";
     std::cout << "\n\n";
 
-    // MG preconditioner
-    std::function<Vec(const Vec&)> mg_precond = [&mg](const Vec& b) -> Vec {
-        return mg.precondition(b);
+    // --- Two independent MG hierarchies for two HMC streams ---
+    auto mg_std = mg;  // copy for standard stream
+    auto mg_ms = mg;   // copy for multi-timescale stream
+    mg_std.rebind_prolongator_lambdas();
+    mg_ms.rebind_prolongator_lambdas();
+
+    std::function<Vec(const Vec&)> mg_precond_std = [&mg_std](const Vec& b) -> Vec {
+        return mg_std.precondition(b);
+    };
+    std::function<Vec(const Vec&)> mg_precond_ms = [&mg_ms](const Vec& b) -> Vec {
+        return mg_ms.precondition(b);
     };
 
-    // Prolongator reference
-    auto& P = mg.geo_prolongators[0];
+    // Prolongator reference (from MS stream's MG)
+    auto& P = mg_ms.geo_prolongators[0];
+
+    // Coarse deflation from MS stream's MG
+    cdefl.eigvecs = mg_ms.sparse_Ac.defl_vecs;
+    cdefl.eigvals = mg_ms.sparse_Ac.defl_vals;
 
     // --- Run two HMC streams ---
     GaugeField gauge_std = gauge;
@@ -160,7 +171,7 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
             rp.outer_type = cfg.t;
             std::mt19937 rng_rev(lcfg.seed + 9999);
             auto res = reversibility_test_mg_multiscale(
-                gauge, lat, lcfg.mass, lcfg.wilson_r, rp, cdefl, P, mg_precond, rng_rev);
+                gauge, lat, lcfg.mass, lcfg.wilson_r, rp, cdefl, P, mg_precond_ms, rng_rev);
 
             std::cout << std::setw(15) << cfg.name
                       << std::setw(14) << std::scientific << std::setprecision(3) << res.gauge_delta
@@ -179,8 +190,8 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
         return 0;
     }
 
-    // Standard also uses MG preconditioner for fair comparison
-    std::function<Vec(const Vec&)> std_precond = mg_precond;
+    // Each stream has its own MG preconditioner
+    std::function<Vec(const Vec&)>& std_precond = mg_precond_std;
 
     int std_accept = 0, ms_accept = 0;
     double std_dH_sum = 0, ms_dH_sum = 0;
@@ -241,7 +252,7 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
         auto t0_ms = Clock::now();
         auto res_ms = hmc_trajectory_mg_multiscale(gauge_ms, lat, lcfg.mass, lcfg.wilson_r,
                                                     ms_params, cdefl, P,
-                                                    mg_precond, rng_ms,
+                                                    mg_precond_ms, rng_ms,
                                                     hcfg.eigen_forecast ? &eigen_forecast : nullptr,
                                                     nullptr, nullptr, ms_tracking);
         double t_ms = Dur(Clock::now() - t0_ms).count();
@@ -260,8 +271,8 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
         if (res_ms.accepted) {
             DiracOp D_new(lat, gauge_ms, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
             OpApply A_new = [&D_new](const Vec& s, Vec& d) { D_new.apply_DdagD(s, d); };
-            mg.sparse_Ac.build(P, A_new, D_new.lat.ndof);
-            evolve_coarse_deflation(cdefl, mg.sparse_Ac,
+            mg_ms.sparse_Ac.build(P, A_new, D_new.lat.ndof);
+            evolve_coarse_deflation(cdefl, mg_ms.sparse_Ac,
                                    hcfg.eigen_forecast ? &eigen_forecast : nullptr);
         }
 
@@ -272,9 +283,9 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
 
         // Periodically do fresh TRLM
         if (hcfg.fresh_period > 0 && (t+1) % hcfg.fresh_period == 0) {
-            mg.sparse_Ac.setup_deflation(n_defl);
-            cdefl.eigvecs = mg.sparse_Ac.defl_vecs;
-            cdefl.eigvals = mg.sparse_Ac.defl_vals;
+            mg_ms.sparse_Ac.setup_deflation(n_defl);
+            cdefl.eigvecs = mg_ms.sparse_Ac.defl_vecs;
+            cdefl.eigvals = mg_ms.sparse_Ac.defl_vals;
             if (hcfg.eigen_forecast) eigen_forecast.reset(); // fresh TRLM = discontinuity
         }
 
