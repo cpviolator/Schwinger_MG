@@ -290,6 +290,14 @@ int plain_leapfrog_evolve(
                 tracking->n_ritz, max_lcz);
             total_cg += res.iterations;
 
+            VOUT(V_DEBUG) << "    [CG] iters=" << res.iterations
+                          << " res=" << std::scientific << std::setprecision(2)
+                          << res.final_residual
+                          << " ritz=" << res.ritz_pairs.size()
+                          << " x0=" << (x0_ptr ? "yes" : "no")
+                          << " history=" << tracking->solution_history.size()
+                          << std::fixed << "\n";
+
             // Save solution into history for chronological extrapolation
             tracking->push_solution(Vec(res.solution));
 
@@ -305,6 +313,8 @@ int plain_leapfrog_evolve(
                         ritz_vecs.push_back(std::move(rp.vector));
                     int n_abs = tracker->absorb(ritz_vecs, apply_D);
                     tracking->total_ritz_absorbed += n_abs;
+                    VOUT(V_DEBUG) << "    [pool] ritz_absorbed=" << n_abs
+                                  << " pool_size=" << tracker->pool_used() << "\n";
                 }
 
                 // Absorb normalised solution vector

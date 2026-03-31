@@ -90,7 +90,13 @@ int run_hmc_mode(GaugeField& gauge, const Lattice& lat,
         tracking_state.history_depth = hcfg.tracking_history;
         tracking = &tracking_state;
         VOUT(V_VERBOSE) << "Tracking: chrono-x0 + " << hcfg.tracking_n_ritz
-                  << " Ritz/solve, pool=" << hcfg.tracking_pool_cap << "\n";
+                  << " Ritz/solve, pool=" << hcfg.tracking_pool_cap
+                  << ", history=" << hcfg.tracking_history << "\n";
+        VOUT(V_DEBUG) << "  tracking_n_ritz=" << hcfg.tracking_n_ritz
+                      << " tracking_pool_cap=" << hcfg.tracking_pool_cap
+                      << " tracking_n_ev=" << hcfg.tracking_n_ev
+                      << " tracking_history=" << hcfg.tracking_history
+                      << " rebuild_freq=" << hcfg.rebuild_freq << "\n";
     }
     VOUT(V_VERBOSE) << "\n";
 

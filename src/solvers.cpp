@@ -53,6 +53,9 @@ static CGResult cg_solve_core(
         iter++;
 
         double rnorm = norm(r);
+        if (g_verbosity >= V_DEBUG && (iter <= 3 || iter % 50 == 0))
+            std::cout << "      [CG iter " << iter << "] res=" << std::scientific
+                      << std::setprecision(3) << rnorm / rhs_norm << std::fixed << "\n";
         if (rnorm / rhs_norm < tol) break;
 
         z = precond ? (*precond)(r) : r;
