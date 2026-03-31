@@ -346,7 +346,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     std::mt19937& rng,
     EigenForecastState* forecast,
     const std::function<void()>* pre_solve,
-    MGHierarchy* mg_hierarchy)
+    MGHierarchy* mg_hierarchy,
+    TrackingState* tracking)
 {
     using Clock = std::chrono::high_resolution_clock;
     using Dur = std::chrono::duration<double>;
@@ -365,6 +366,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
 
     MomentumField mom(lat);
     mom.randomise(rng);
+
+    if (tracking) tracking->reset_trajectory();
 
     DiracOp D_init(lat, gauge, mass, wilson_r, c_sw, mu_t);
     // Multi-timescale: e/o not supported (force splitting requires consistent action).
@@ -410,21 +413,46 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         gauge_force(gauge, params.beta, gf);
 
         if (eo) {
-            // E/O CG for faster convergence, but full-lattice force for
-            // consistency with the inner force splitting
             EvenOddDiracOp eoD(D);
             Vec phi_o_cur = eoD.gather_odd(phi);
             OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-            auto res = cg_solve(A, n_half, phi_o_cur, params.cg_maxiter, params.cg_tol);
-            total_cg += res.iterations;
-            Vec x_full = eoD.reconstruct_full(res.solution);
-            fermion_force(D, x_full, ff_full);
+            if (tracking) {
+                Vec x0_vec;
+                const Vec* x0p = tracking->has_prev_solution
+                    ? (x0_vec = tracking->extrapolated_x0(), &x0_vec) : nullptr;
+                int mlcz = tracking->n_ritz > 0 ? 3 * tracking->n_ritz : 0;
+                auto tres = cg_solve_tracked(A, n_half, phi_o_cur,
+                    x0p, nullptr, params.cg_maxiter, params.cg_tol,
+                    tracking->n_ritz, mlcz);
+                total_cg += tres.iterations;
+                tracking->push_solution(Vec(tres.solution));
+                Vec x_full = eoD.reconstruct_full(tres.solution);
+                fermion_force(D, x_full, ff_full);
+            } else {
+                auto res = cg_solve(A, n_half, phi_o_cur, params.cg_maxiter, params.cg_tol);
+                total_cg += res.iterations;
+                Vec x_full = eoD.reconstruct_full(res.solution);
+                fermion_force(D, x_full, ff_full);
+            }
         } else {
             OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
-            auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
-                                         params.cg_maxiter, params.cg_tol);
-            total_cg += res.iterations;
-            fermion_force(D, res.solution, ff_full);
+            if (tracking) {
+                Vec x0_vec;
+                const Vec* x0p = tracking->has_prev_solution
+                    ? (x0_vec = tracking->extrapolated_x0(), &x0_vec) : nullptr;
+                int mlcz = tracking->n_ritz > 0 ? 3 * tracking->n_ritz : 0;
+                auto tres = cg_solve_tracked(A, lat.ndof, phi,
+                    x0p, &mg_precond, params.cg_maxiter, params.cg_tol,
+                    tracking->n_ritz, mlcz);
+                total_cg += tres.iterations;
+                tracking->push_solution(Vec(tres.solution));
+                fermion_force(D, tres.solution, ff_full);
+            } else {
+                auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
+                                             params.cg_maxiter, params.cg_tol);
+                total_cg += res.iterations;
+                fermion_force(D, res.solution, ff_full);
+            }
         }
 
         // Inner force (coarse deflation) — always on full lattice

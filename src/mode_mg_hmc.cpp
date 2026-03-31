@@ -187,6 +187,17 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
     int ms_low_evals_sum = 0;
     EigenForecastState eigen_forecast;
 
+    // Eigenspace tracking for MS trajectory
+    TrackingState tracking_state;
+    TrackingState* ms_tracking = nullptr;
+    if (hcfg.enable_tracking) {
+        tracking_state.n_ritz = hcfg.tracking_n_ritz;
+        tracking_state.pool_capacity = hcfg.tracking_pool_cap;
+        tracking_state.n_ev = hcfg.tracking_n_ev;
+        tracking_state.history_depth = hcfg.tracking_history;
+        ms_tracking = &tracking_state;
+    }
+
     // --- Standard HMC header ---
     std::cout << "--- Standard HMC (reference) ---\n";
     std::cout << std::setw(5) << "traj"
@@ -226,7 +237,8 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
         auto res_ms = hmc_trajectory_mg_multiscale(gauge_ms, lat, lcfg.mass, lcfg.wilson_r,
                                                     ms_params, cdefl, P,
                                                     mg_precond, rng_ms,
-                                                    hcfg.eigen_forecast ? &eigen_forecast : nullptr);
+                                                    hcfg.eigen_forecast ? &eigen_forecast : nullptr,
+                                                    nullptr, nullptr, ms_tracking);
         double t_ms = Dur(Clock::now() - t0_ms).count();
         if (res_ms.accepted) ms_accept++;
         ms_dH_sum += std::abs(res_ms.dH);

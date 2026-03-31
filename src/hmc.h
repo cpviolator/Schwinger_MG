@@ -386,7 +386,8 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     std::mt19937& rng,
     EigenForecastState* forecast = nullptr,
     const std::function<void()>* pre_solve = nullptr,
-    MGHierarchy* mg_hierarchy = nullptr);  // called before each CG
+    MGHierarchy* mg_hierarchy = nullptr,
+    TrackingState* tracking = nullptr);
 
 // Reversibility test: forward trajectory → negate momenta → backward trajectory
 // Returns ||U_final - U_initial|| / ||U_initial|| (should be ~machine epsilon)
