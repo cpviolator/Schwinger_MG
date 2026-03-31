@@ -125,12 +125,33 @@ seed=42, MG 2-level (block=4, k_null=4, symmetric), rebuild-freq=5 for pool mode
 | 24 | -12% | -27% | -36% | ~yes |
 | 32 | -12% | 0% | -12% | chrono only |
 
-**Note on L=32:** The Ritz pool provides zero benefit at L=32 with the default
-`max_lanczos_vecs = 3 × n_ritz = 12`. With DOF=2048, only 12 Lanczos vectors out
-of ~150 CG iterations are stored — too few to capture useful near-null directions.
-The pool quality remains at max_res=0.96 (essentially random). To fix: increase
-`--tracking-n-ritz` or `max_lanczos_vecs` to store more of the CG Krylov space.
-This is a tuning issue, not a fundamental limitation.
+**L=32 breakdown:**
+
+| L=32 config | CG/traj | vs baseline |
+|-------------|---------|-------------|
+| Baseline (MG only) | 3454 | — |
+| Chrono-x0 only (history=3) | 3024 | -12% |
+| Ritz pool only (rebuild_freq=5) | 3454 | **0%** |
+| Combined (chrono + Ritz) | 3024 | -12% |
+
+The Ritz pool provides **zero benefit at L=32** with the default configuration.
+Root cause: `max_lanczos_vecs = 3 × n_ritz = 12` stores only 12 CG residuals
+out of ~150 CG iterations. At DOF=2048, these 12 vectors don't span enough of
+the near-null space — the pool quality is max_res=0.96 (essentially random),
+and the MG prolongator rebuilt from these vectors is no better than the stale one.
+
+At L=8 (DOF=128, ~50 CG iters) and L=16 (DOF=512, ~100 CG iters), 12 Lanczos
+vectors capture a meaningful fraction of the Krylov space. At L=32 the fraction
+drops below the useful threshold.
+
+**Prescription:** Increase `--tracking-n-ritz` proportionally with DOF:
+- L=8 (DOF=128): n_ritz=4, max_lcz=12 → 24% of CG iters → works
+- L=16 (DOF=512): n_ritz=4, max_lcz=12 → 12% of CG iters → works
+- L=24 (DOF=1152): n_ritz=4, max_lcz=12 → 8% of CG iters → marginal
+- L=32 (DOF=2048): n_ritz=4, max_lcz=12 → 5% of CG iters → insufficient
+
+A rule of thumb: `n_ritz ≈ max(4, DOF/128)` would give n_ritz=16 at L=32
+(storing 48 Lanczos vectors, ~30% of CG iters). This needs testing.
 
 The contributions are approximately additive:
 - **Chrono-x0** provides a constant ~12% reduction across all L (solution similarity
