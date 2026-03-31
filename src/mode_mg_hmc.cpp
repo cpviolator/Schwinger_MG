@@ -237,6 +237,21 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
 
     for (int t = 0; t < n_traj; t++) {
         // --- Standard HMC (MG-preconditioned) ---
+        // Galerkin rebuild both MGs for their respective gauge fields
+        // D_*_op must outlive the trajectory calls (lambdas capture this pointer)
+        auto D_std_op = std::make_unique<DiracOp>(lat, gauge_std, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+        auto D_ms_op = std::make_unique<DiracOp>(lat, gauge_ms, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+        if (t > 0) {
+            mg_std.levels[0].op = D_std_op->as_DdagD_op();
+            mg_std.levels[0].Ac.build(*D_std_op, mg_std.geo_prolongators[0]);
+            mg_std.rebuild_deeper_levels();
+
+            mg_ms.levels[0].op = D_ms_op->as_DdagD_op();
+            mg_ms.levels[0].Ac.build(*D_ms_op, mg_ms.geo_prolongators[0]);
+            mg_ms.rebuild_deeper_levels();
+        }
+
+        // --- Standard HMC ---
         auto t0_std = Clock::now();
         auto res_std = hmc_trajectory(gauge_std, lat, lcfg.mass, lcfg.wilson_r,
                                        std_params, rng_std, &std_precond);
@@ -245,16 +260,6 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
         std_dH_sum += std::abs(res_std.dH);
         std_cg_sum += res_std.total_cg_iters;
         std_time_sum += t_std;
-
-        // --- MG Multi-timescale HMC ---
-        // Galerkin rebuild MS stream's MG for current gauge
-        // D_ms_op must outlive the trajectory call (lambda captures this pointer)
-        auto D_ms_op = std::make_unique<DiracOp>(lat, gauge_ms, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
-        if (t > 0) {
-            mg_ms.levels[0].op = D_ms_op->as_DdagD_op();
-            mg_ms.levels[0].Ac.build(*D_ms_op, mg_ms.geo_prolongators[0]);
-            mg_ms.rebuild_deeper_levels();
-        }
         auto t0_ms = Clock::now();
         auto res_ms = hmc_trajectory_mg_multiscale(gauge_ms, lat, lcfg.mass, lcfg.wilson_r,
                                                     ms_params, cdefl, P,
