@@ -386,20 +386,36 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     double KE_init = mom.kinetic_energy();
     double SG_init = gauge_action(gauge, params.beta);
     double SF_init;
-    if (eo) {
-        EvenOddDiracOp eoD(D_init);
-        Vec phi_o_init = eoD.gather_odd(phi);
-        OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-        auto res = cg_solve(A, n_half, phi_o_init, params.cg_maxiter, params.cg_tol);
-        Vec x_full = eoD.reconstruct_full(res.solution);
-        SF_init = std::real(dot(phi, x_full));
-        total_cg += res.iterations;
-    } else {
+    {
         OpApply A = [&D_init](const Vec& s, Vec& d) { D_init.apply_DdagD(s, d); };
-        auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
-                                     params.cg_maxiter, params.cg_tol);
-        SF_init = std::real(dot(phi, res.solution));
-        total_cg += res.iterations;
+        if (tracking) {
+            // One-time tracker initialization
+            if (!tracking->tracker_initialized && !tracking->tracker_ptr) {
+                int n_kr = std::min(std::max(4 * tracking->n_ev + 20, 50), lat.ndof);
+                auto trlm = trlm_eigensolver(A, lat.ndof, tracking->n_ev, n_kr, 200, 1e-8);
+                if (trlm.converged) {
+                    auto* tracker = new EigenTracker();
+                    tracking->tracker_ptr = tracker;
+                    auto aD = [&D_init](const Vec& s, Vec& d) { D_init.apply(s, d); };
+                    tracker->init(trlm, aD, lat.ndof, tracking->n_ev, tracking->pool_capacity);
+                    tracking->tracker_initialized = true;
+                }
+            }
+            Vec x0_vec;
+            const Vec* x0p = tracking->has_prev_solution
+                ? (x0_vec = tracking->extrapolated_x0(), &x0_vec) : nullptr;
+            int mlcz = tracking->n_ritz > 0 ? 3 * tracking->n_ritz : 0;
+            auto tres = cg_solve_tracked(A, lat.ndof, phi, x0p, &mg_precond,
+                params.cg_maxiter, params.cg_tol, tracking->n_ritz, mlcz);
+            SF_init = std::real(dot(phi, tres.solution));
+            total_cg += tres.iterations;
+            tracking->push_solution(Vec(tres.solution));
+        } else {
+            auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
+                                         params.cg_maxiter, params.cg_tol);
+            SF_init = std::real(dot(phi, res.solution));
+            total_cg += res.iterations;
+        }
     }
     double H_init = KE_init + SG_init + SF_init;
 
@@ -411,6 +427,27 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
         DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         std::array<RVec, 2> gf, ff_full, fl;
         gauge_force(gauge, params.beta, gf);
+
+        // Helper: absorb Ritz pairs + solution into tracker pool
+        auto absorb_tracked = [&](CGTrackedResult& tres, const DiracOp& Dop) {
+            if (!tracking || !tracking->tracker_initialized || !tracking->tracker_ptr)
+                return;
+            auto* tracker = static_cast<EigenTracker*>(tracking->tracker_ptr);
+            auto apply_D = [&Dop](const Vec& s, Vec& d) { Dop.apply(s, d); };
+            if (!tres.ritz_pairs.empty()) {
+                std::vector<Vec> rv;
+                for (auto& rp : tres.ritz_pairs) rv.push_back(std::move(rp.vector));
+                tracking->total_ritz_absorbed += tracker->absorb(rv, apply_D);
+            }
+            Vec xn = tres.solution;
+            double xnorm = norm(xn);
+            if (xnorm > 1e-14) {
+                scale(xn, cx(1.0/xnorm));
+                tracker->absorb({xn}, apply_D);
+                tracking->total_solutions_absorbed++;
+            }
+            tracking->force_eval_count++;
+        };
 
         if (eo) {
             EvenOddDiracOp eoD(D);
@@ -426,6 +463,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
                     tracking->n_ritz, mlcz);
                 total_cg += tres.iterations;
                 tracking->push_solution(Vec(tres.solution));
+                absorb_tracked(tres, D);
                 Vec x_full = eoD.reconstruct_full(tres.solution);
                 fermion_force(D, x_full, ff_full);
             } else {
@@ -446,6 +484,7 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
                     tracking->n_ritz, mlcz);
                 total_cg += tres.iterations;
                 tracking->push_solution(Vec(tres.solution));
+                absorb_tracked(tres, D);
                 fermion_force(D, tres.solution, ff_full);
             } else {
                 auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
@@ -690,26 +729,28 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     }
 
     // --- Final Hamiltonian ---
-    if (pre_solve) (*pre_solve)();  // refresh MG before final H CG
+    if (pre_solve) (*pre_solve)();
     double KE_final = mom.kinetic_energy();
     double SG_final = gauge_action(gauge, params.beta);
     double SF_final;
-    if (eo) {
-        DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
-        EvenOddDiracOp eoD(D);
-        Vec phi_o_fin = eoD.gather_odd(phi);
-        OpApply A = [&eoD](const Vec& s, Vec& d) { eoD.apply_schur_dag_schur(s, d); };
-        auto res = cg_solve(A, n_half, phi_o_fin, params.cg_maxiter, params.cg_tol);
-        Vec x_full = eoD.reconstruct_full(res.solution);
-        SF_final = std::real(dot(phi, x_full));
-        total_cg += res.iterations;
-    } else {
+    {
         DiracOp D(lat, gauge, mass, wilson_r, c_sw, mu_t);
         OpApply A = [&D](const Vec& s, Vec& d) { D.apply_DdagD(s, d); };
-        auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
-                                     params.cg_maxiter, params.cg_tol);
-        SF_final = std::real(dot(phi, res.solution));
-        total_cg += res.iterations;
+        if (tracking) {
+            Vec x0_vec;
+            const Vec* x0p = tracking->has_prev_solution
+                ? (x0_vec = tracking->extrapolated_x0(), &x0_vec) : nullptr;
+            auto tres = cg_solve_tracked(A, lat.ndof, phi, x0p, &mg_precond,
+                params.cg_maxiter, params.cg_tol, 0);  // no Ritz for H eval
+            SF_final = std::real(dot(phi, tres.solution));
+            total_cg += tres.iterations;
+            tracking->push_solution(Vec(tres.solution));
+        } else {
+            auto res = cg_solve_precond(A, lat.ndof, phi, mg_precond,
+                                         params.cg_maxiter, params.cg_tol);
+            SF_final = std::real(dot(phi, res.solution));
+            total_cg += res.iterations;
+        }
     }
     double H_final = KE_final + SG_final + SF_final;
 
