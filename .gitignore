@@ -1,1 +1,4 @@
 build/
+REPORT_*.md
+RESULTS_*.md
+doc/
