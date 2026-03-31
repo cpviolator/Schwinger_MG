@@ -114,7 +114,7 @@ seed=42, MG 2-level (block=4, k_null=4, symmetric), rebuild-freq=5 for pool mode
 | 8 | 128 | 1247 | 1119 | 1047 | 941 | **25%** |
 | 16 | 512 | 2269 | 1997 | 1784 | 1571 | **31%** |
 | 24 | 1152 | 2886 | 2536 | 2108 | 1844 | **36%** |
-| 32 | 2048 | TBD | TBD | TBD | TBD | TBD |
+| 32 | 2048 | 3454 | 3024 | 3454 | 3024 | **12%** |
 
 ### Individual Contributions
 
@@ -123,6 +123,14 @@ seed=42, MG 2-level (block=4, k_null=4, symmetric), rebuild-freq=5 for pool mode
 | 8 | -10% | -16% | -25% | ~yes |
 | 16 | -12% | -21% | -31% | ~yes |
 | 24 | -12% | -27% | -36% | ~yes |
+| 32 | -12% | 0% | -12% | chrono only |
+
+**Note on L=32:** The Ritz pool provides zero benefit at L=32 with the default
+`max_lanczos_vecs = 3 × n_ritz = 12`. With DOF=2048, only 12 Lanczos vectors out
+of ~150 CG iterations are stored — too few to capture useful near-null directions.
+The pool quality remains at max_res=0.96 (essentially random). To fix: increase
+`--tracking-n-ritz` or `max_lanczos_vecs` to store more of the CG Krylov space.
+This is a tuning issue, not a fundamental limitation.
 
 The contributions are approximately additive:
 - **Chrono-x0** provides a constant ~12% reduction across all L (solution similarity
