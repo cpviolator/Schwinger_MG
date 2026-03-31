@@ -262,8 +262,11 @@ int plain_leapfrog_evolve(
             auto* tracker = get_tracker(tracking);
             if (!tracking->tracker_initialized && !tracker) {
                 // Run quick TRLM to seed the pool
+                int n_kr = std::min(std::max(4 * tracking->n_ev + 20, 50), lat.ndof);
+                VOUT(V_DEBUG) << "    [tracker] initializing TRLM n_ev=" << tracking->n_ev
+                              << " n_kr=" << n_kr << " dim=" << lat.ndof << "\n";
                 auto trlm = trlm_eigensolver(A, lat.ndof, tracking->n_ev,
-                    std::min(2 * tracking->n_ev + 10, lat.ndof), 100, 1e-8);
+                    n_kr, 200, 1e-8);
                 if (trlm.converged) {
                     tracker = new EigenTracker();
                     tracking->tracker_ptr = tracker;
@@ -271,6 +274,9 @@ int plain_leapfrog_evolve(
                     tracker->init(trlm, apply_D_init, lat.ndof,
                                   tracking->n_ev, tracking->pool_capacity);
                     tracking->tracker_initialized = true;
+                    VOUT(V_DEBUG) << "    [tracker] initialized, pool_size=" << tracker->pool_used() << "\n";
+                } else {
+                    VOUT(V_DEBUG) << "    [tracker] TRLM FAILED to converge\n";
                 }
             }
 
