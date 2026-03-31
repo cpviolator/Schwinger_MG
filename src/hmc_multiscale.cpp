@@ -513,10 +513,71 @@ MGMultiScaleResult hmc_trajectory_mg_multiscale(
     };
 
     auto update_gauge = [&](double dt) {
+        // Before gauge update: compute δD for force-based tracking
+        // (needs current gauge + momentum to build δD = D(exp(iεπ)U) - D(U))
+        bool do_force_update = tracking && tracking->tracker_initialized
+            && tracking->tracker_ptr && (params.inner_tracking & 1);
+        bool do_perturb = tracking && tracking->tracker_initialized
+            && tracking->tracker_ptr && (params.inner_tracking & 4);
+
+        if (do_force_update || do_perturb) {
+            DiracOp D_pre(lat, gauge, mass, wilson_r, c_sw, mu_t);
+            auto* tracker = static_cast<EigenTracker*>(tracking->tracker_ptr);
+
+            if (do_perturb) {
+                // Perturbation extension: add drift directions BEFORE gauge update
+                auto dD = [&D_pre, &mom, dt](const Vec& src, Vec& dst) {
+                    D_pre.apply_delta_D(src, dst, mom.pi, dt);
+                };
+                auto dDdag = [&D_pre, &mom, dt](const Vec& src, Vec& dst) {
+                    int V = D_pre.lat.V;
+                    Vec g5s(src.size()); // γ₅ src
+                    for (int sv = 0; sv < V; sv++) { g5s[2*sv] = src[2*sv]; g5s[2*sv+1] = -src[2*sv+1]; }
+                    Vec g5d(src.size());
+                    D_pre.apply_delta_D(g5s, g5d, mom.pi, dt);
+                    dst.resize(src.size());
+                    for (int sv = 0; sv < V; sv++) { dst[2*sv] = g5d[2*sv]; dst[2*sv+1] = -g5d[2*sv+1]; }
+                };
+                auto Ddag = [&D_pre](const Vec& src, Vec& dst) { D_pre.apply_dag(src, dst); };
+                auto Dfwd = [&D_pre](const Vec& src, Vec& dst) { D_pre.apply(src, dst); };
+                tracker->perturbation_extend(dD, dDdag, Ddag, Dfwd);
+            }
+
+            if (do_force_update) {
+                // Force-based evolution: rotate Dpool via δD (0 full matvecs)
+                auto apply_deltaD = [&D_pre, &mom, dt](const Vec& src, Vec& dst) {
+                    D_pre.apply_delta_D(src, dst, mom.pi, dt);
+                };
+                tracker->force_update(apply_deltaD);
+            }
+        }
+
+        // Gauge update
         #pragma omp parallel for collapse(2) schedule(static)
         for (int mu = 0; mu < 2; mu++)
             for (int s = 0; s < lat.V; s++)
                 gauge.U[mu][s] *= std::exp(cx(0, dt * mom.pi[mu][s]));
+
+        // After gauge update: RR projection onto updated operator
+        if (tracking && tracking->tracker_initialized && tracking->tracker_ptr
+            && (params.inner_tracking & 2)) {
+            auto* tracker = static_cast<EigenTracker*>(tracking->tracker_ptr);
+            DiracOp D_post(lat, gauge, mass, wilson_r, c_sw, mu_t);
+            OpApply A_post = [&D_post](const Vec& s, Vec& d) { D_post.apply_DdagD(s, d); };
+            // RR project the pool's n_ev best vectors
+            int k = std::min(tracking->n_ev, (int)tracker->pool.size());
+            if (k > 0) {
+                std::vector<Vec> vecs(tracker->pool.begin(), tracker->pool.begin() + k);
+                auto rr = rr_evolve(A_post, vecs, lat.ndof);
+                for (int i = 0; i < k; i++) tracker->pool[i] = std::move(rr.eigvecs[i]);
+                // Update Dpool cache for the rotated vectors
+                auto apply_D = [&D_post](const Vec& s, Vec& d) { D_post.apply(s, d); };
+                for (int i = 0; i < k; i++) {
+                    tracker->Dpool[i].resize(lat.ndof);
+                    apply_D(tracker->pool[i], tracker->Dpool[i]);
+                }
+            }
+        }
     };
 
     auto compute_inner_force = [&](std::array<RVec, 2>& fl) {

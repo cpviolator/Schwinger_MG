@@ -345,6 +345,11 @@ struct MGMultiScaleParams {
     int mg_perturb_freq = 0; // perturbation-refresh MG prolongator every N inner steps (0=never)
     double c_sw = 0.0;     // clover coefficient
     double mu_t = 0.0;    // twisted mass parameter
+    // Inner-step eigenspace tracking options (bitmask, 0=off):
+    //   1 = force_update (δD evolution, 0 full matvecs)
+    //   2 = RR projection (k matvecs per inner step)
+    //   4 = perturbation_extend (adds drift directions, ~1.25 D†D per n_ev)
+    int inner_tracking = 0;
     bool use_eo = false;   // even-odd preconditioning
 };
 

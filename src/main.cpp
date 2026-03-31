@@ -270,6 +270,7 @@ int main(int argc, char** argv) {
         else if (match("--tracking-pool")) hcfg.tracking_pool_cap = next_int();
         else if (match("--tracking-n-ev")) hcfg.tracking_n_ev = next_int();
         else if (match("--tracking-history")) hcfg.tracking_history = next_int();
+        else if (match("--inner-tracking")) hcfg.inner_tracking = next_int();
         else if (match("--feast-benchmark")) feast_benchmark = true;
         else if (match("--rebuild-freq")) hcfg.rebuild_freq = next_int();
         else if (match("--mg-perturb-freq")) hcfg.mg_perturb_freq = next_int();

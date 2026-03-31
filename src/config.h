@@ -66,6 +66,7 @@ struct HMCConfig {
     int tracking_pool_cap = 16;
     int tracking_n_ev = 4;
     int tracking_history = 1;  // chronological solution history depth (1-10)
+    int inner_tracking = 0;   // inner-step tracking bitmask: 1=force, 2=RR, 4=perturb
 };
 
 struct StudyConfig {

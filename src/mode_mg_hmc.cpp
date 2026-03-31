@@ -124,6 +124,7 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
     if (hcfg.omelyan) ms_params.outer_type = OuterIntegrator::Omelyan;
     if (hcfg.force_gradient) ms_params.outer_type = OuterIntegrator::FGI;
     ms_params.defl_refresh = hcfg.defl_refresh;
+    ms_params.inner_tracking = hcfg.inner_tracking;
 
     std::string outer_name = "Leapfrog";
     if (hcfg.omelyan) outer_name = "Omelyan (2MN)";
@@ -233,6 +234,13 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
         std_time_sum += t_std;
 
         // --- MG Multi-timescale HMC ---
+        // Galerkin rebuild MG for current gauge
+        if (t > 0) {
+            DiracOp D_rb(lat, gauge_ms, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+            mg.levels[0].op = D_rb.as_DdagD_op();
+            mg.levels[0].Ac.build(D_rb, mg.geo_prolongators[0]);
+            mg.rebuild_deeper_levels();
+        }
         auto t0_ms = Clock::now();
         auto res_ms = hmc_trajectory_mg_multiscale(gauge_ms, lat, lcfg.mass, lcfg.wilson_r,
                                                     ms_params, cdefl, P,
@@ -258,6 +266,25 @@ int run_mg_hmc(GaugeField& gauge, const Lattice& lat,
             mg.sparse_Ac.build(P, A_new, D_new.lat.ndof);
             evolve_coarse_deflation(cdefl, mg.sparse_Ac,
                                    hcfg.eigen_forecast ? &eigen_forecast : nullptr);
+        }
+
+        // Pool refresh: rebuild MG prolongator from tracking pool
+        int rb = hcfg.rebuild_freq;
+        if (rb > 0 && (t+1) % rb == 0 && ms_tracking && ms_tracking->tracker_initialized) {
+            auto pool_vecs = ms_tracking->get_null_vectors();
+            if ((int)pool_vecs.size() >= mcfg.k_null) {
+                DiracOp D_rb(lat, gauge_ms, lcfg.mass, lcfg.wilson_r, lcfg.c_sw, lcfg.mu_t);
+                std::mt19937 rng_rb(lcfg.seed + 7000 + t);
+                mg = build_mg_hierarchy(D_rb, mcfg.mg_levels, mcfg.block_size,
+                    mcfg.k_null, mcfg.resolved_coarse_block(), 0, rng_rb,
+                    mcfg.w_cycle, 3, 3, false, &pool_vecs);
+                // Rebuild sparse coarse + deflation
+                OpApply A_rb = D_rb.as_DdagD_op();
+                mg.setup_sparse_coarse(A_rb, lat.ndof, n_defl);
+                cdefl.eigvecs = mg.sparse_Ac.defl_vecs;
+                cdefl.eigvals = mg.sparse_Ac.defl_vals;
+                VOUT(V_VERBOSE) << "  [pool refresh at traj " << t << "]\n";
+            }
         }
 
         // Periodically do fresh TRLM
